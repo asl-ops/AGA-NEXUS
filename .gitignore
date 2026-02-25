@@ -24,7 +24,16 @@ dist-ssr
 *.sw?
 .vercel
 .env*.local
+.env
+.env.*
+!.env.example
 
 # Import scripts output
 import-report-*.json
 clientes-ejemplo.xlsx
+
+# Local backups / temp files
+node_modules_backup_*/
+package-lock.backup_*.json
+*.tmp
+*.timestamp-*.mjs
