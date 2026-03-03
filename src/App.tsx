@@ -17,11 +17,13 @@ const ProformasView = lazy(() => import('@/components/ProformasView'));
 const InvoicesView = lazy(() => import('@/components/InvoicesView'));
 const CashView = lazy(() => import('@/components/CashView'));
 const EconomicView = lazy(() => import('@/components/EconomicView'));
+const PreaperturaView = lazy(() => import('@/components/PreaperturaView'));
 const Configuration = lazy(() => import('@/components/Configuration'));
 const LegacyDashboard = lazy(() => import('@/components/legacy/LegacyDashboard'));
 const ClientBillingPlaceholder = lazy(() => import('./components/ClientBillingPlaceholder'));
 const MainNavigationHub = lazy(() => import('@/components/MainNavigationHub').then(module => ({ default: module.MainNavigationHub })));
 import NewCaseWizard from '@/components/NewCaseWizard';
+import { ModuleInDevelopmentNotice } from '@/components/ui/ModuleInDevelopmentNotice';
 import { Task } from '@/types';
 import { getViewMode, VIEW_MODE_CHANGED_EVENT, ViewMode } from '@/services/viewModeService';
 
@@ -41,13 +43,15 @@ const PRESETS: Record<VisualSettings['mode'], VisualSettings> = {
 
 const App: React.FC = () => {
   const {
-    caseHistory, appSettings, currentUser, isLoading, initializationError,
+    caseHistory, appSettings, currentUser, isLoading, initializationError, requiresManualGoogleLogin,
+    retryInitialization, loginWithGooglePopup,
     deleteClient, users
   } = useAppContext();
   const { currentView, fileNumberParam, navigateTo, duplicateOf } = useHashRouter();
   const [isNewCaseWizardOpen, setIsNewCaseWizardOpen] = React.useState(false);
   const [initialPrefixId, setInitialPrefixId] = React.useState<string | undefined>(undefined);
   const [initialClientId, setInitialClientId] = React.useState<string | undefined>(undefined);
+  const [forceBlankClientSelection, setForceBlankClientSelection] = React.useState(false);
 
   // 🎨 Theme Engine State
   const [visualSettings, setVisualSettings] = React.useState<VisualSettings>(() => {
@@ -58,6 +62,8 @@ const App: React.FC = () => {
 
   const [isThemeModalOpen, setIsThemeModalOpen] = React.useState(false);
   const [viewMode, setViewModeState] = React.useState<ViewMode>(getViewMode());
+  const appStartMarkedRef = React.useRef(false);
+  const appReadyMarkedRef = React.useRef(false);
 
   // Reset indicator
   const isModified = React.useMemo(() => {
@@ -134,6 +140,26 @@ const App: React.FC = () => {
     const timeoutId = window.setTimeout(preloadCommonViews, 500);
     return () => window.clearTimeout(timeoutId);
   }, []);
+
+  useEffect(() => {
+    if (appStartMarkedRef.current) return;
+    performance.mark('app_start');
+    appStartMarkedRef.current = true;
+  }, []);
+
+  useEffect(() => {
+    if (appReadyMarkedRef.current) return;
+    if (isLoading || !currentUser || !appSettings) return;
+    performance.mark('app_ready');
+    performance.measure('app_boot_total', 'app_start', 'app_ready');
+    if (import.meta.env.DEV) {
+      const entry = performance.getEntriesByName('app_boot_total').at(-1);
+      if (entry) {
+        console.info(`[perf] app_boot_total=${Math.round(entry.duration)}ms`);
+      }
+    }
+    appReadyMarkedRef.current = true;
+  }, [isLoading, currentUser, appSettings]);
 
   const {
     client, setClient,
@@ -212,11 +238,27 @@ const App: React.FC = () => {
     navigateTo('/');
   };
 
-  const handleCreateNewCase = (prefixId?: string, preselectedClientId?: string) => {
+  const handleCreateNewCase = (prefixId?: string, preselectedClientId?: string, forceBlankClient = false) => {
     setInitialPrefixId(prefixId);
     setInitialClientId(preselectedClientId);
+    setForceBlankClientSelection(forceBlankClient);
     setIsNewCaseWizardOpen(true);
   };
+
+  const handleSidebarNewSameClient = () => {
+    const canReuseCurrentClient = currentView === 'detail' && Boolean(client.id || clienteId);
+    if (!canReuseCurrentClient) return;
+    handleCreateNewCase(
+      getPrefixFromFileNumber(fileNumberParam),
+      client.id || clienteId || undefined
+    );
+  };
+
+  const handleSidebarNewDifferentClient = () => {
+    handleCreateNewCase(undefined, undefined, true);
+  };
+
+  const canCreateSameClient = currentView === 'detail' && Boolean(client.id || clienteId);
 
   const getPrefixFromFileNumber = (fileNumber?: string | null): string | undefined => {
     if (!fileNumber || fileNumber === 'new') return undefined;
@@ -254,13 +296,45 @@ const App: React.FC = () => {
       case 'clients':
         return <Suspense fallback={loadingFallback}><ClientExplorer onReturnToDashboard={() => navigateTo('/')} /></Suspense>;
       case 'billing':
-        return <Suspense fallback={loadingFallback}><AlbaranesExplorer onReturn={() => navigateTo('/')} /></Suspense>;
+        return (
+          <Suspense fallback={loadingFallback}>
+            <div className="flex h-full min-h-0 flex-col">
+              <ModuleInDevelopmentNotice
+                moduleName="Albaranes"
+                message="Este módulo está en evolución. En próximas iteraciones se completará, incluyendo la posibilidad de incorporar albaranes a facturas proforma y a facturas."
+              />
+              <div className="min-h-0 flex-1">
+                <AlbaranesExplorer onReturn={() => navigateTo('/')} />
+              </div>
+            </div>
+          </Suspense>
+        );
       case 'proformas':
-        return <Suspense fallback={loadingFallback}><ProformasView /></Suspense>;
+        return (
+          <Suspense fallback={loadingFallback}>
+            <div className="flex h-full min-h-0 flex-col">
+              <ModuleInDevelopmentNotice moduleName="Proformas" />
+              <div className="min-h-0 flex-1">
+                <ProformasView />
+              </div>
+            </div>
+          </Suspense>
+        );
       case 'invoices':
         return <Suspense fallback={loadingFallback}><InvoicesView /></Suspense>;
       case 'cash':
-        return <Suspense fallback={loadingFallback}><CashView /></Suspense>;
+        return (
+          <Suspense fallback={loadingFallback}>
+            <div className="flex h-full min-h-0 flex-col">
+              <ModuleInDevelopmentNotice moduleName="Caja" />
+              <div className="min-h-0 flex-1">
+                <CashView />
+              </div>
+            </div>
+          </Suspense>
+        );
+      case 'preapertura':
+        return <Suspense fallback={loadingFallback}><PreaperturaView /></Suspense>;
       case 'client-billing':
         const billingClientId = new URLSearchParams(window.location.hash.split('?')[1]).get('clientId');
         return <Suspense fallback={loadingFallback}><ClientBillingPlaceholder clientId={billingClientId || undefined} onBack={() => navigateTo('/clients')} /></Suspense>;
@@ -311,7 +385,7 @@ const App: React.FC = () => {
                 getPrefixFromFileNumber(fileNumberParam),
                 client.id || clienteId || undefined
               )}
-              onNewCaseDifferentClient={() => handleCreateNewCase()}
+              onNewCaseDifferentClient={() => handleCreateNewCase(undefined, undefined, true)}
             />
           </Suspense>
         );
@@ -335,20 +409,38 @@ const App: React.FC = () => {
     }
   }
 
-  if (isLoading || !currentUser || !appSettings) {
-    return (
-      <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
-        <HermesSpinner size="xl" label="Cargando aplicación..." />
-      </div>
-    )
-  }
-
   if (initializationError) {
     return (
       <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
         <div className="max-w-3xl bg-white p-8 rounded-xl shadow-lg border border-yellow-300">
           <p>{initializationError}</p>
+          <div className="mt-6 flex items-center gap-3">
+            {requiresManualGoogleLogin ? (
+              <button
+                type="button"
+                onClick={() => void loginWithGooglePopup()}
+                className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 transition-colors"
+              >
+                Iniciar sesión con Google
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => void retryInitialization()}
+              className="px-4 py-2 rounded-lg border border-slate-300 text-slate-700 text-sm font-semibold hover:bg-slate-50 transition-colors"
+            >
+              Reintentar
+            </button>
+          </div>
         </div>
+      </div>
+    )
+  }
+
+  if (isLoading || !currentUser || !appSettings) {
+    return (
+      <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
+        <HermesSpinner size="xl" label="Cargando aplicación..." />
       </div>
     )
   }
@@ -360,8 +452,11 @@ const App: React.FC = () => {
       case 'responsible': return 'Panel de Responsable';
       case 'clients': return 'Gestión de Clientes';
       case 'billing': return 'Albaranes';
+      case 'proformas': return 'Proformas';
+      case 'invoices': return 'Facturas';
       case 'economico': return 'Gestión Económica de Clientes';
       case 'cash': return 'Caja Diaria';
+      case 'preapertura': return 'Expedientes en preapertura';
       case 'config': return 'Configuración del Sistema';
       case 'detail': return fileNumberParam === 'new' ? 'Nuevo Expediente' : `Expediente ${fileNumberParam}`;
       default: return 'Gestor Pro';
@@ -383,6 +478,9 @@ const App: React.FC = () => {
     <AppShell
       title={getPageTitle()}
       onOpenThemeSettings={() => setIsThemeModalOpen(true)}
+      onNewCaseSameClient={handleSidebarNewSameClient}
+      onNewCaseDifferentClient={handleSidebarNewDifferentClient}
+      canCreateSameClient={canCreateSameClient}
     >
       {appContent}
       <NewCaseWizard
@@ -390,12 +488,14 @@ const App: React.FC = () => {
         onClose={() => {
           setIsNewCaseWizardOpen(false);
           setInitialClientId(undefined);
+          setForceBlankClientSelection(false);
         }}
         onCreated={handleWizardCreated}
         users={users}
         currentUser={currentUser || undefined}
         initialPrefixId={initialPrefixId}
         initialClientId={initialClientId}
+        forceBlankClientSelection={forceBlankClientSelection}
       />
 
       {/* 🎨 THEME ADJUSTMENTS MODAL (PORTED FROM FAC-EXPRESS) */}

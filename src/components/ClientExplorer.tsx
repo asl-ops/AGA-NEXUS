@@ -1,7 +1,6 @@
 
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import type { Client, ClientSearchParams, ClientFilters } from '@/types/client';
-import { searchClients } from '@/services/clientService';
 import { Search, Plus, FolderOpen, MoreHorizontal, Check, Users, Receipt, RefreshCw, X, List, FileText, FileCheck, Wallet, Eye, History, ChevronDown, Copy } from 'lucide-react';
 import { useConfirmation } from '@/hooks/useConfirmation';
 import ConfirmationModal from './ConfirmationModal';
@@ -19,12 +18,17 @@ import { getPaymentMethods } from '@/services/paymentMethodService';
 import type { PaymentMethod } from '@/types/paymentMethod';
 import Breadcrumbs from './ui/Breadcrumbs';
 import { ColumnSelectorMenu, type ColumnSelectorOption } from './ui/ColumnSelectorMenu';
+import { ColumnResizeToggle } from './ui/ColumnResizeToggle';
 import {
     pushRecentClientIdentifier,
     readRecentClientIdentifiers,
+    readActiveClientIdentifier,
+    setActiveClientIdentifier,
+    clearActiveClientIdentifier,
     type RecentClientIdentifierEntry
 } from '@/utils/recentClientIdentifiers';
 import { CopyAction } from './ui/ActionFeedback';
+import { InputClearButton } from './ui/InputClearButton';
 
 
 interface ClientExplorerProps {
@@ -145,6 +149,14 @@ const ClientExplorer: React.FC<ClientExplorerProps> = ({
         );
     }, [currentUser?.id, getDisplayNameForIdentifier]);
 
+    useEffect(() => {
+        if (searchTerm.trim().length > 0) return;
+        const active = readActiveClientIdentifier();
+        if (active) {
+            setSearchTerm(active);
+        }
+    }, [searchTerm]);
+
     const toggleVisibleColumn = (id: string) => {
         setVisibleColumns(prev => prev.includes(id) ? prev.filter(c => c !== id) : [...prev, id]);
     };
@@ -166,6 +178,24 @@ const ClientExplorer: React.FC<ClientExplorerProps> = ({
 
     // Confirmation modal
     const { confirmationState, closeConfirmation } = useConfirmation();
+
+    // Pre-index clients once to avoid expensive per-keystroke normalization work.
+    const indexedClients = useMemo(() => {
+        return savedClients.map(client => {
+            const name = String(client.nombre || client.legalName || '').toLowerCase();
+            const documento = String(client.documento || client.nif || '').toLowerCase();
+            const telefono = String(client.telefono || client.phone || '').toLowerCase();
+            const email = String(client.email || '').toLowerCase();
+            const direccion = String(client.direccion || client.address || client.domicilioFiscal?.direccion || '').toLowerCase();
+            const poblacion = String(client.poblacion || client.city || client.domicilioFiscal?.poblacion || '').toLowerCase();
+            const provincia = String(client.province || client.domicilioFiscal?.provincia || '').toLowerCase();
+            const cp = String(client.cp || client.postalCode || client.domicilioFiscal?.cp || '').toLowerCase();
+            return {
+                client,
+                searchable: `${name}|${documento}|${telefono}|${email}|${direccion}|${poblacion}|${provincia}|${cp}`
+            };
+        });
+    }, [savedClients]);
 
 
     // -- Memoized Data for Stats --
@@ -331,22 +361,44 @@ const ClientExplorer: React.FC<ClientExplorerProps> = ({
 
         setLoading(true);
         try {
-            // 1. Load Real Clients from DB
-            let searchParams = { ...params };
-            const res = await searchClients(searchParams);
-            let fetchedItems = res.items;
+            const normalizedQ = (params.q || '').toLowerCase().trim();
+            const isNumericSearch = normalizedQ.length > 0 && /^\d+$/.test(normalizedQ);
+            let fetchedItems = indexedClients
+                .filter(entry => {
+                    if (!normalizedQ) return true;
+                    if (isNumericSearch) {
+                        // Numeric search: prioritize document/phone/cp matches.
+                        const docOrPhone = [
+                            entry.client.documento,
+                            entry.client.nif,
+                            entry.client.telefono,
+                            entry.client.phone,
+                            entry.client.cp,
+                            entry.client.postalCode,
+                            entry.client.domicilioFiscal?.cp
+                        ]
+                            .map(value => String(value || '').toLowerCase())
+                            .join('|');
+                        return docOrPhone.includes(normalizedQ);
+                    }
+                    return entry.searchable.includes(normalizedQ);
+                })
+                .map(entry => entry.client);
 
             // 2. Filter & Merge Ghost Clients (Client-side logic)
             // Only show ghosts if we are searching (to avoid clutter) OR if activeView is 'all'/'detected'
             // User wanted them "SIEMPRE indexado por IDENTIFICADOR".
 
-            const q = searchParams.q?.toLowerCase() || '';
+            const q = normalizedQ;
             const matchingGhosts = ghostClients.filter(g => {
                 if (!q) return true;
+                const ghostName = String(g.nombre ?? '').toLowerCase();
+                const ghostDocument = String(g.documento ?? '').toLowerCase();
+                const ghostId = String(g.id ?? '').toLowerCase();
                 return (
-                    g.nombre.toLowerCase().includes(q) ||
-                    g.documento?.toLowerCase().includes(q) ||
-                    g.id.toLowerCase().includes(q)
+                    ghostName.includes(q) ||
+                    ghostDocument.includes(q) ||
+                    ghostId.includes(q)
                 );
             });
 
@@ -500,15 +552,22 @@ const ClientExplorer: React.FC<ClientExplorerProps> = ({
                 }
             }
 
-            setItems(filteredItems);
-            setTotal(activeView === 'all' ? res.total + matchingGhosts.length : filteredItems.length);
+            const filteredTotal = filteredItems.length;
+            const offset = params.offset || 0;
+            const limit = params.limit === 'all' ? filteredTotal : (params.limit as number);
+            const paginated = params.limit === 'all'
+                ? filteredItems
+                : filteredItems.slice(offset, offset + limit);
+
+            setItems(paginated);
+            setTotal(filteredTotal);
         } catch (error) {
             console.error("Error loading clients:", error);
             addToast("Error al cargar la lista de clientes", "error");
         } finally {
             setLoading(false);
         }
-    }, [params, activeView, caseCounts, addToast, ghostClients, activeFilters, clientFilters, hasClientExplorerCriteria]);
+    }, [params, activeView, caseCounts, addToast, ghostClients, activeFilters, clientFilters, hasClientExplorerCriteria, indexedClients]);
 
     useEffect(() => {
         loadClients();
@@ -525,6 +584,7 @@ const ClientExplorer: React.FC<ClientExplorerProps> = ({
         const selected = items.find(c => c.id === clientId);
         if (selected?.documento) {
             pushRecentIdentifier(selected.documento, selected.nombre || selected.legalName || '');
+            setActiveClientIdentifier(currentUser?.id, selected.documento, selected.nombre || selected.legalName || '');
         }
     };
 
@@ -671,6 +731,7 @@ const ClientExplorer: React.FC<ClientExplorerProps> = ({
                             onToggle={toggleVisibleColumn}
                             iconOnly
                         />
+                        <ColumnResizeToggle />
 
                         {/* Active filter chips */}
                         {activeFilterCount > 0 && (
@@ -733,7 +794,30 @@ const ClientExplorer: React.FC<ClientExplorerProps> = ({
                             onChange={(e) => setSearchTerm(e.target.value)}
                             className="w-full h-14 pl-14 pr-36 bg-white border border-slate-200 rounded-2xl text-base font-normal text-slate-900 placeholder:text-slate-300 focus:ring-4 focus:ring-sky-500/5 focus:border-sky-500 outline-none transition-all shadow-sm"
                         />
-                        <div ref={recentsRef} className="absolute right-3 top-1/2 -translate-y-1/2">
+                        {searchTerm.trim().length > 0 && (
+                            <InputClearButton
+                                onClick={() => {
+                                    setSearchTerm('');
+                                    setIsRecentsOpen(false);
+                                }}
+                                className="absolute right-32 top-1/2 -translate-y-1/2"
+                                title="Limpiar búsqueda"
+                            />
+                        )}
+                        <div ref={recentsRef} className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2">
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    clearActiveClientIdentifier();
+                                    setSearchTerm('');
+                                    setIsRecentsOpen(false);
+                                }}
+                                className="h-9 w-9 inline-flex items-center justify-center rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-500 transition-colors"
+                                title="Limpiar contexto global de cliente"
+                                aria-label="Limpiar contexto global de cliente"
+                            >
+                                <X size={14} />
+                            </button>
                             <button
                                 onClick={() => setIsRecentsOpen(v => !v)}
                                 className="h-9 px-3 inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-600 transition-colors"
@@ -764,6 +848,7 @@ const ClientExplorer: React.FC<ClientExplorerProps> = ({
                                                         e.preventDefault();
                                                         setSearchTerm(recent.identifier);
                                                         pushRecentIdentifier(recent.identifier, resolvedName);
+                                                        setActiveClientIdentifier(currentUser?.id, recent.identifier, resolvedName);
                                                         setIsRecentsOpen(false);
                                                     }}
                                                     className="w-full text-left px-3 py-2 hover:bg-sky-50 border-b border-slate-50 last:border-0"

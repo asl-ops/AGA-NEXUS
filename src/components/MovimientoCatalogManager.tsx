@@ -14,7 +14,8 @@ import {
     updateMovimiento,
     softDeleteMovimiento,
     getCuentasContables,
-    migrateGlobalMovementsToPrefix
+    migrateGlobalMovementsToPrefix,
+    recoverPrefixCatalogFromPredefinedRefs
 } from '@/services/movimientoService';
 import { getPrefixes } from '@/services/prefixService';
 import { PrefixConfig } from '@/types';
@@ -62,6 +63,7 @@ const MovimientoCatalogManager: React.FC<MovimientoCatalogManagerProps> = ({
     const [importReport, setImportReport] = useState<ImportReport | null>(null);
     const [isImporting, setIsImporting] = useState(false);
     const [isReportOpen, setIsReportOpen] = useState(false);
+    const [autoRecoveredPrefixes, setAutoRecoveredPrefixes] = useState<Set<string>>(new Set());
 
     // Prefix state
     const [prefixes, setPrefixes] = useState<PrefixConfig[]>([]);
@@ -123,7 +125,29 @@ const MovimientoCatalogManager: React.FC<MovimientoCatalogManagerProps> = ({
         if (!selectedPrefixId) return;
         setLoading(true);
         try {
-            const data = await getMovimientos(selectedPrefixId);
+            let data = await getMovimientos(selectedPrefixId);
+
+            if (data.length === 0 && !autoRecoveredPrefixes.has(selectedPrefixId)) {
+                const recoveredByRefs = await recoverPrefixCatalogFromPredefinedRefs(selectedPrefixId);
+                if (recoveredByRefs.recovered > 0) {
+                    addToast(
+                        `Se restauraron ${recoveredByRefs.recovered} movimientos del catálogo desde las referencias del prefijo.`,
+                        'success'
+                    );
+                    data = await getMovimientos(selectedPrefixId);
+                } else {
+                    const migrated = await migrateGlobalMovementsToPrefix(selectedPrefixId);
+                    if (migrated.migrated > 0) {
+                        addToast(
+                            `Se migraron ${migrated.migrated} movimientos legacy al catálogo de este prefijo.`,
+                            'success'
+                        );
+                        data = await getMovimientos(selectedPrefixId);
+                    }
+                }
+                setAutoRecoveredPrefixes(prev => new Set(prev).add(selectedPrefixId));
+            }
+
             setMovimientos(data);
         } catch (error) {
             addToast('Error al cargar catálogo de movimientos', 'error');

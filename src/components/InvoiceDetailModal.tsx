@@ -32,9 +32,17 @@ const InvoiceDetailModal: React.FC<Props> = ({ isOpen, onClose, invoice, onUpdat
     // Confirmation modal
     const { confirmationState, confirm, closeConfirmation } = useConfirmation();
 
+    const emitHelpError = (error: string) => {
+        window.dispatchEvent(new CustomEvent('aga:help-error', { detail: { error } }));
+    };
+
     if (!isOpen) return null;
 
     const handleIssue = async () => {
+        if (!invoice.clientId && !invoice.clientName && !invoice.clientIdentity) {
+            emitHelpError('INVOICE_CREATE_WITHOUT_CLIENT');
+            return;
+        }
         const confirmed = await confirm({
             title: '¿Emitir factura?',
             message: 'Se asignará un número oficial a esta factura.',

@@ -13,7 +13,11 @@ import {
     updateDoc,
     deleteDoc,
     query,
-    where
+    where,
+    orderBy,
+    startAt,
+    endAt,
+    limit as limitQuery
 } from 'firebase/firestore';
 import type {
     Client,
@@ -46,6 +50,112 @@ export async function searchClients(params: ClientSearchParams): Promise<ClientS
     } = params;
 
     try {
+        // FAST PATH (critical for NewCaseWizard/Typeahead):
+        // If caller is doing simple text search, query Firestore by prefix + limit
+        // instead of downloading all clients and filtering in memory.
+        const hasOnlyGeneralSearch = !!(q && q.trim()) && !documento && !nombre && !telefono && !email && !direccion;
+        if (hasOnlyGeneralSearch) {
+            const rawQ = q!.trim();
+            const normalizedQ = normalizeText(rawQ);
+            const normalizedDocQ = normalizeDocumento(rawQ) || normalizedQ;
+            const isNumericSearch = isMostlyNumeric(rawQ);
+            const requestedLimit = Math.max(5, Math.min(limit === 'all' ? 50 : limit, 50));
+
+            const candidatesMap = new Map<string, Client>();
+
+            // Prefix search by document
+            const byDocumentoSnap = await getDocs(
+                query(
+                    clientsCollection,
+                    orderBy('documento'),
+                    startAt(normalizedDocQ),
+                    endAt(`${normalizedDocQ}\uf8ff`),
+                    limitQuery(requestedLimit)
+                )
+            );
+            byDocumentoSnap.docs.forEach((d) => {
+                candidatesMap.set(d.id, { id: d.id, ...d.data() } as Client);
+            });
+
+            // Prefix search by name (for non-numeric lookups)
+            if (!isNumericSearch) {
+                const byNombreSnap = await getDocs(
+                    query(
+                        clientsCollection,
+                        orderBy('nombre'),
+                        startAt(normalizedQ),
+                        endAt(`${normalizedQ}\uf8ff`),
+                        limitQuery(requestedLimit)
+                    )
+                );
+                byNombreSnap.docs.forEach((d) => {
+                    candidatesMap.set(d.id, { id: d.id, ...d.data() } as Client);
+                });
+            }
+
+            let filtered = Array.from(candidatesMap.values());
+
+            if (estado) {
+                filtered = filtered.filter(c => (c.estado || 'ACTIVO') === estado);
+            }
+            if (tipo) {
+                filtered = filtered.filter(c => c.tipo === tipo);
+            }
+
+            filtered = filtered.filter(client => {
+                const normalizedNombre = normalizeText(client.nombre || '');
+                const normalizedDocumento = normalizeDocumento(client.documento || client.nif || '');
+                const normalizedTelefono = normalizeTelefono(client.telefono || '');
+                const normalizedEmail = (client.email || '').toLowerCase();
+                const normalizedDireccion = normalizeText(client.domicilioFiscal?.direccion || '');
+                const normalizedPoblacion = normalizeText(client.domicilioFiscal?.poblacion || '');
+                const normalizedProvincia = normalizeText(client.domicilioFiscal?.provincia || '');
+                const normalizedCP = (client.domicilioFiscal?.cp || '').toLowerCase();
+
+                if (isNumericSearch) {
+                    return normalizedDocumento?.includes(normalizedDocQ) ||
+                        normalizedTelefono?.includes(normalizedDocQ) ||
+                        normalizedCP.includes(normalizedDocQ);
+                }
+
+                return normalizedNombre.includes(normalizedQ) ||
+                    normalizedDocumento?.includes(normalizedDocQ) ||
+                    normalizedTelefono?.includes(normalizedDocQ) ||
+                    normalizedEmail.includes(rawQ.toLowerCase()) ||
+                    normalizedDireccion.includes(normalizedQ) ||
+                    normalizedPoblacion.includes(normalizedQ) ||
+                    normalizedProvincia.includes(normalizedQ) ||
+                    normalizedCP.includes(normalizedQ);
+            });
+
+            filtered.sort((a, b) => {
+                const aNombre = normalizeText(a.nombre || '');
+                const bNombre = normalizeText(b.nombre || '');
+                const aDoc = normalizeDocumento(a.documento || a.nif || '') || '';
+                const bDoc = normalizeDocumento(b.documento || b.nif || '') || '';
+
+                if (aDoc === normalizedDocQ) return -1;
+                if (bDoc === normalizedDocQ) return 1;
+
+                const aStartsWith = aNombre.startsWith(normalizedQ);
+                const bStartsWith = bNombre.startsWith(normalizedQ);
+                if (aStartsWith && !bStartsWith) return -1;
+                if (!aStartsWith && bStartsWith) return 1;
+
+                const aDocStarts = aDoc.startsWith(normalizedDocQ);
+                const bDocStarts = bDoc.startsWith(normalizedDocQ);
+                if (aDocStarts && !bDocStarts) return -1;
+                if (!aDocStarts && bDocStarts) return 1;
+
+                return aNombre.localeCompare(bNombre);
+            });
+
+            const total = filtered.length;
+            const effectiveLimit = limit === 'all' ? total : limit;
+            const paginatedItems = filtered.slice(offset, offset + effectiveLimit);
+            return { items: paginatedItems, total };
+        }
+
         // Obtener todos los clientes (Firestore no tiene búsqueda "contains" nativa eficiente)
         let clientsQuery = query(clientsCollection);
 

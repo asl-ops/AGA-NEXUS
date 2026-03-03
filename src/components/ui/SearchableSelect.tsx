@@ -43,12 +43,16 @@ const SearchableSelect: React.FC<SearchableSelectProps> = ({
     const selectedOption = options.find(opt => opt.id === value);
 
     const filteredOptions = options.filter(opt => {
-        const searchLower = search.toLowerCase();
+        const searchLower = String(search || '').toLowerCase();
+        const label = String(opt.label || '').toLowerCase();
+        const description = String(opt.description || '').toLowerCase();
+        const subLabel = String(opt.subLabel || '').toLowerCase();
+        const searchValue = String(opt.searchValue || '').toLowerCase();
         return (
-            opt.label.toLowerCase().includes(searchLower) ||
-            opt.description?.toLowerCase().includes(searchLower) ||
-            opt.subLabel?.toLowerCase().includes(searchLower) ||
-            opt.searchValue?.toLowerCase().includes(searchLower)
+            label.includes(searchLower) ||
+            description.includes(searchLower) ||
+            subLabel.includes(searchLower) ||
+            searchValue.includes(searchLower)
         );
     });
 

@@ -10,7 +10,8 @@ import {
     MoreHorizontal,
     History,
     ChevronDown,
-    Copy
+    Copy,
+    Pin
 } from 'lucide-react';
 import { DeliveryNote } from '../types/billing';
 import { useBilling } from '../hooks/useBilling';
@@ -24,10 +25,20 @@ import { cn } from '../utils/cn';
 import Breadcrumbs from './ui/Breadcrumbs';
 import { ColumnSelectorMenu, type ColumnSelectorOption } from './ui/ColumnSelectorMenu';
 import { PremiumFilterButton } from './ui/PremiumFilterButton';
+import { InputClearButton } from './ui/InputClearButton';
+import { ColumnResizeToggle } from './ui/ColumnResizeToggle';
 import { navigateToModule } from '@/utils/moduleNavigation';
 import {
+    clearIdentifierContext,
+    getIdentifierContextChangedEventName,
+    readEffectiveClientIdentifier,
+    readIsIdentifierPinned,
+    readPinnedIdentifier,
     pushRecentClientIdentifier,
     readRecentClientIdentifiers,
+    setActiveClientIdentifier,
+    setPinnedClientIdentifier,
+    unpinClientIdentifier,
     normalizeRecentClientIdentifier,
     type RecentClientIdentifierEntry
 } from '@/utils/recentClientIdentifiers';
@@ -259,6 +270,8 @@ const AlbaranesExplorer: React.FC<AlbaranesExplorerProps> = () => {
     const recentsRef = useRef<HTMLDivElement>(null);
     const [recentIdentifiers, setRecentIdentifiers] = useState<RecentClientIdentifierEntry[]>([]);
     const [isRecentsOpen, setIsRecentsOpen] = useState(false);
+    const [isIdentifierPinned, setIsIdentifierPinned] = useState(false);
+    const [pinnedIdentifier, setPinnedIdentifier] = useState<string | null>(null);
 
     // Detect clientId from URL
     const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
@@ -311,6 +324,31 @@ const AlbaranesExplorer: React.FC<AlbaranesExplorerProps> = () => {
             });
         }
     }, []);
+
+    useEffect(() => {
+        if (searchTerm.trim()) return;
+        const active = readEffectiveClientIdentifier();
+        if (active) setSearchTerm(active);
+    }, [searchTerm]);
+
+    useEffect(() => {
+        const refreshIdentifierContext = () => {
+            const pinned = readIsIdentifierPinned();
+            const pinnedValue = readPinnedIdentifier();
+            const effective = readEffectiveClientIdentifier();
+            setIsIdentifierPinned(pinned);
+            setPinnedIdentifier(pinnedValue);
+            if (pinned && pinnedValue) {
+                setSearchTerm(pinnedValue);
+                setIsRecentsOpen(false);
+            } else if (!searchTerm && effective) {
+                setSearchTerm(effective);
+            }
+        };
+        refreshIdentifierContext();
+        window.addEventListener(getIdentifierContextChangedEventName(), refreshIdentifierContext as EventListener);
+        return () => window.removeEventListener(getIdentifierContextChangedEventName(), refreshIdentifierContext as EventListener);
+    }, [searchTerm]);
 
     // Load delivery notes
     useEffect(() => {
@@ -396,6 +434,7 @@ const AlbaranesExplorer: React.FC<AlbaranesExplorerProps> = () => {
         setSearchTerm('');
         setIsSearchExpanded(false);
         setIsRecentsOpen(false);
+        clearIdentifierContext();
     };
 
     const handleSelectRecentIdentifier = (identifier: string) => {
@@ -403,6 +442,11 @@ const AlbaranesExplorer: React.FC<AlbaranesExplorerProps> = () => {
         setSearchTerm(identifier);
         setIsRecentsOpen(false);
         const updated = pushRecentClientIdentifier(currentUser?.id, identifier, name);
+        if (isIdentifierPinned) {
+            setPinnedClientIdentifier(currentUser?.id, identifier, name);
+        } else {
+            setActiveClientIdentifier(currentUser?.id, identifier, name);
+        }
         setRecentIdentifiers(updated.map(entry => ({
             ...entry,
             displayName: entry.displayName || getDisplayNameForIdentifier(entry.identifier)
@@ -532,6 +576,7 @@ const AlbaranesExplorer: React.FC<AlbaranesExplorerProps> = () => {
                             onToggle={toggleVisibleColumn}
                             iconOnly
                         />
+                        <ColumnResizeToggle />
                     </div>
                 </div>
 
@@ -557,7 +602,14 @@ const AlbaranesExplorer: React.FC<AlbaranesExplorerProps> = () => {
                                             ref={searchInputRef}
                                             type="text"
                                             value={searchTerm}
-                                            onChange={(e) => setSearchTerm(e.target.value)}
+                                            onChange={(e) => {
+                                                if (isIdentifierPinned) return;
+                                                const nextValue = e.target.value;
+                                                setSearchTerm(nextValue);
+                                                if (!nextValue.trim()) {
+                                                    clearIdentifierContext();
+                                                }
+                                            }}
                                             onKeyDown={(e) => {
                                                 if (e.key !== 'Enter') return;
                                                 const trimmed = searchTerm.trim();
@@ -566,6 +618,11 @@ const AlbaranesExplorer: React.FC<AlbaranesExplorerProps> = () => {
                                                 if (!normalized) return;
                                                 const displayName = getDisplayNameForIdentifier(trimmed);
                                                 const updated = pushRecentClientIdentifier(currentUser?.id, trimmed, displayName);
+                                                if (isIdentifierPinned) {
+                                                    setPinnedClientIdentifier(currentUser?.id, trimmed, displayName);
+                                                } else {
+                                                    setActiveClientIdentifier(currentUser?.id, trimmed, displayName);
+                                                }
                                                 setRecentIdentifiers(updated.map(entry => ({
                                                     ...entry,
                                                     displayName: entry.displayName || getDisplayNameForIdentifier(entry.identifier)
@@ -573,17 +630,40 @@ const AlbaranesExplorer: React.FC<AlbaranesExplorerProps> = () => {
                                             }}
                                             onBlur={handleSearchCollapse}
                                             placeholder="Buscar por Nº, Cliente, Expediente..."
-                                            className="w-full pl-10 pr-36 py-2 border border-slate-200 rounded-lg text-sm font-normal text-slate-700 bg-slate-50 shadow-sm focus:bg-white focus:ring-2 focus:ring-sky-500/10 focus:border-sky-500 outline-none transition-all placeholder:text-slate-400"
+                                            readOnly={isIdentifierPinned}
+                                            className={`w-full pl-10 py-2 border rounded-lg text-sm font-normal text-slate-700 shadow-sm outline-none transition-all placeholder:text-slate-400 ${isIdentifierPinned
+                                                ? 'pr-[220px] bg-sky-50 border-sky-200'
+                                                : 'pr-[220px] border-slate-200 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-sky-500/10 focus:border-sky-500'
+                                                }`}
                                         />
-                                        {searchTerm && (
+                                        <div className="absolute right-2 top-1/2 -translate-y-1/2 z-10 flex items-center gap-2">
+                                            {searchTerm && (
+                                                <InputClearButton
+                                                    onClick={handleSearchClear}
+                                                    title="Limpiar búsqueda"
+                                                />
+                                            )}
                                             <button
-                                                onClick={handleSearchClear}
-                                                className="absolute right-24 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors"
+                                                type="button"
+                                                onMouseDown={(e) => {
+                                                    e.preventDefault();
+                                                    if (isIdentifierPinned) {
+                                                        unpinClientIdentifier();
+                                                        return;
+                                                    }
+                                                    const candidate = normalizeRecentClientIdentifier(searchTerm || pinnedIdentifier || '');
+                                                    if (!candidate) return;
+                                                    setPinnedClientIdentifier(currentUser?.id, candidate, getDisplayNameForIdentifier(candidate));
+                                                }}
+                                                className={`inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors ${isIdentifierPinned
+                                                    ? 'border-sky-300 bg-sky-100 text-sky-700'
+                                                    : 'border-slate-200 bg-white text-slate-400 hover:text-sky-600 hover:border-sky-200'
+                                                    }`}
+                                                title={isIdentifierPinned ? "Identificador fijado (clic para desfijar)" : "Fijar identificador"}
                                             >
-                                                <X className="w-4 h-4" />
+                                                <Pin className="w-3.5 h-3.5" />
                                             </button>
-                                        )}
-                                        <div ref={recentsRef} className="absolute right-2 top-1/2 -translate-y-1/2">
+                                            <div ref={recentsRef}>
                                             <button
                                                 type="button"
                                                 onMouseDown={(e) => {
@@ -629,6 +709,7 @@ const AlbaranesExplorer: React.FC<AlbaranesExplorerProps> = () => {
                                                     )}
                                                 </div>
                                             )}
+                                            </div>
                                         </div>
                                     </div>
                                 )}

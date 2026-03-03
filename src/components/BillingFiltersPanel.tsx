@@ -32,7 +32,7 @@ export interface BillingFilters {
     dateType: 'createdAt' | 'closedAt';
     startDate: string;
     endDate: string;
-    status: string; // 'Todos', 'Pending', 'Invoiced', 'Void'
+    status: string; // 'Todos' | 'Pendientes' | 'Cobradas'
 }
 
 interface BillingFiltersPanelProps {
@@ -72,10 +72,14 @@ const PredictiveInput: React.FC<{
         setInputValue(displayValue || '');
     }, [displayValue]);
 
-    const filteredSuggestions = suggestions.filter(s =>
-        s.label.toLowerCase().includes(inputValue.toLowerCase()) ||
-        (s.sublabel && s.sublabel.toLowerCase().includes(inputValue.toLowerCase()))
-    ).slice(0, 5);
+    const lowerInput = (inputValue || '').toLowerCase();
+    const filteredSuggestions = suggestions
+        .filter(s => {
+            const suggestionLabel = String((s as any)?.label ?? '').toLowerCase();
+            const suggestionSubLabel = String((s as any)?.sublabel ?? '').toLowerCase();
+            return suggestionLabel.includes(lowerInput) || suggestionSubLabel.includes(lowerInput);
+        })
+        .slice(0, 5);
 
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {
@@ -344,7 +348,7 @@ const BillingFiltersPanel: React.FC<BillingFiltersPanelProps> = ({
 
                         {showStatusFilter && (
                             <div className="flex flex-col gap-2 mt-6">
-                                <label className="app-label-block px-1">Estado</label>
+                                <label className="app-label-block px-1">Estado Facturas</label>
                                 <div className="relative">
                                     <select
                                         value={filters.status}
@@ -352,9 +356,8 @@ const BillingFiltersPanel: React.FC<BillingFiltersPanelProps> = ({
                                         className="w-full bg-slate-50 border border-[#cfdbe7] rounded-lg h-12 pl-4 pr-10 text-base font-normal text-[#0d141b] appearance-none focus:ring-2 focus:ring-[#1380ec]/20 outline-none transition-all"
                                     >
                                         <option value="Todos">Todos</option>
-                                        <option value="Pending">Pendiente</option>
-                                        <option value="Invoiced">Facturado</option>
-                                        <option value="Void">Anulado</option>
+                                        <option value="Pendientes">Pendientes</option>
+                                        <option value="Cobradas">Cobradas</option>
                                     </select>
                                     <Activity className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
                                 </div>

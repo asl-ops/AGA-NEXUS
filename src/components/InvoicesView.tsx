@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Printer, Eye, Trash2, Copy, MoreHorizontal, Ban, ExternalLink, Banknote, X, Search } from 'lucide-react';
+import { Printer, Eye, Trash2, Copy, MoreHorizontal, Ban, ExternalLink, Banknote, X, Search, History, ChevronDown, Pin } from 'lucide-react';
 import { pdf } from '@react-pdf/renderer';
 import { CopyAction } from './ui/ActionFeedback';
 import { useToast } from '@/hooks/useToast';
@@ -16,6 +16,8 @@ import ConfirmationModal from './ConfirmationModal';
 import Breadcrumbs from './ui/Breadcrumbs';
 import { ColumnSelectorMenu, type ColumnSelectorOption } from './ui/ColumnSelectorMenu';
 import { PremiumFilterButton } from './ui/PremiumFilterButton';
+import { InputClearButton } from './ui/InputClearButton';
+import { ColumnResizeToggle } from './ui/ColumnResizeToggle';
 import { navigateToModule } from '@/utils/moduleNavigation';
 import { ResizableExplorerTable } from './ui/ResizableExplorerTable';
 import PaginationControls, { PageSize } from './PaginationControls';
@@ -24,6 +26,19 @@ import {
     saveClientNavigationContext
 } from '@/utils/clientNavigationContext';
 import { toUiTitleCase } from '@/utils/titleCase';
+import {
+    clearIdentifierContext,
+    getIdentifierContextChangedEventName,
+    normalizeRecentClientIdentifier,
+    readEffectiveClientIdentifier,
+    readIsIdentifierPinned,
+    readPinnedIdentifier,
+    readRecentClientIdentifiers,
+    setActiveClientIdentifier,
+    setPinnedClientIdentifier,
+    unpinClientIdentifier,
+    type RecentClientIdentifierEntry,
+} from '@/utils/recentClientIdentifiers';
 
 interface InvoicesViewProps {
     onViewCase?: (caseId: string) => void;
@@ -80,6 +95,11 @@ const InvoicesView: React.FC<InvoicesViewProps> = ({ onViewCase }) => {
     const [pageSize, setPageSize] = useState<PageSize>(25);
 
     const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
+    const [isRecentsOpen, setIsRecentsOpen] = useState(false);
+    const [recentIdentifiers, setRecentIdentifiers] = useState<RecentClientIdentifierEntry[]>([]);
+    const [isIdentifierPinned, setIsIdentifierPinned] = useState(false);
+    const [pinnedIdentifier, setPinnedIdentifier] = useState<string | null>(null);
+    const recentsRef = useRef<HTMLDivElement>(null);
 
     const { confirmationState, confirm, closeConfirmation } = useConfirmation();
 
@@ -158,7 +178,46 @@ const InvoicesView: React.FC<InvoicesViewProps> = ({ onViewCase }) => {
                 sourceModule: 'invoices'
             });
         }
+
+        setRecentIdentifiers(readRecentClientIdentifiers());
     }, []);
+
+    useEffect(() => {
+        if ((filters.searchQuery || '').trim().length > 0) return;
+        const active = readEffectiveClientIdentifier();
+        if (!active) return;
+        setFilters(prev => ({ ...prev, searchQuery: active }));
+    }, [filters.searchQuery]);
+
+    useEffect(() => {
+        const refreshIdentifierContext = () => {
+            const pinned = readIsIdentifierPinned();
+            const pinnedValue = readPinnedIdentifier();
+            const effective = readEffectiveClientIdentifier();
+            setIsIdentifierPinned(pinned);
+            setPinnedIdentifier(pinnedValue);
+            if (pinned && pinnedValue) {
+                setFilters(prev => ({ ...prev, searchQuery: pinnedValue }));
+                setIsRecentsOpen(false);
+            } else if (!(filters.searchQuery || '').trim() && effective) {
+                setFilters(prev => ({ ...prev, searchQuery: effective }));
+            }
+        };
+        refreshIdentifierContext();
+        window.addEventListener(getIdentifierContextChangedEventName(), refreshIdentifierContext as EventListener);
+        return () => window.removeEventListener(getIdentifierContextChangedEventName(), refreshIdentifierContext as EventListener);
+    }, [filters.searchQuery]);
+
+    useEffect(() => {
+        if (!isRecentsOpen) return;
+        const onDocMouseDown = (e: MouseEvent) => {
+            if (recentsRef.current && !recentsRef.current.contains(e.target as Node)) {
+                setIsRecentsOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', onDocMouseDown);
+        return () => document.removeEventListener('mousedown', onDocMouseDown);
+    }, [isRecentsOpen]);
 
     useEffect(() => {
         if (!hasInvoiceExplorerCriteria) {
@@ -260,6 +319,14 @@ const InvoicesView: React.FC<InvoicesViewProps> = ({ onViewCase }) => {
         setSelectedInvoice(null);
     };
 
+    const emitHelpAction = (action: string, durationMs?: number) => {
+        window.dispatchEvent(new CustomEvent('aga:help-action', { detail: { action, durationMs } }));
+    };
+
+    const emitHelpError = (error: string) => {
+        window.dispatchEvent(new CustomEvent('aga:help-error', { detail: { error } }));
+    };
+
     const filteredInvoices = useMemo(() => invoices.filter(inv => {
         if (!hasInvoiceExplorerCriteria) return false;
 
@@ -293,8 +360,20 @@ const InvoicesView: React.FC<InvoicesViewProps> = ({ onViewCase }) => {
             }
         }
 
+        if (filters.status === 'Pendientes') {
+            if (!(inv.status === 'issued' && !inv.isPaid)) return false;
+        } else if (filters.status === 'Cobradas') {
+            if (!inv.isPaid) return false;
+        }
+
         return true;
     }), [invoices, filters, hasInvoiceExplorerCriteria]);
+
+    useEffect(() => {
+        if (hasInvoiceExplorerCriteria && filteredInvoices.length === 0) {
+            emitHelpError('EMPTY_RESULT');
+        }
+    }, [hasInvoiceExplorerCriteria, filteredInvoices.length]);
 
     const orderedInvoices = useMemo(() => {
         const data = [...filteredInvoices];
@@ -363,6 +442,33 @@ const InvoicesView: React.FC<InvoicesViewProps> = ({ onViewCase }) => {
         });
     };
 
+    const selectedIdentifier = (filters.searchQuery || '').trim();
+    const selectedClientName = useMemo(() => {
+        if ((filters.clientLabel || '').trim()) return toUiTitleCase(filters.clientLabel);
+        if (!selectedIdentifier) return '';
+        const normalizedIdentifier = selectedIdentifier.toLowerCase();
+        const match = invoices.find(inv => String(inv.clientIdentity || '').toLowerCase() === normalizedIdentifier);
+        return match?.clientName ? toUiTitleCase(match.clientName) : '';
+    }, [filters.clientLabel, selectedIdentifier, invoices]);
+
+    const handleSelectRecentIdentifier = (identifier: string) => {
+        const normalizedIdentifier = String(identifier || '').trim().toUpperCase();
+        if (!normalizedIdentifier) return;
+
+        const match = invoices.find(inv => String(inv.clientIdentity || '').toUpperCase() === normalizedIdentifier);
+        if (isIdentifierPinned) {
+            setPinnedClientIdentifier(undefined, normalizedIdentifier, match?.clientName || '');
+        } else {
+            setActiveClientIdentifier(undefined, normalizedIdentifier, match?.clientName || '');
+        }
+        setFilters(prev => ({
+            ...prev,
+            searchQuery: normalizedIdentifier,
+            clientLabel: match?.clientName || prev.clientLabel || ''
+        }));
+        setIsRecentsOpen(false);
+    };
+
     return (
         <div className="flex h-full bg-[#fcfdfe] overflow-hidden">
             <BillingFiltersPanel
@@ -377,7 +483,7 @@ const InvoicesView: React.FC<InvoicesViewProps> = ({ onViewCase }) => {
                 showCaseFilter={false}
                 showPrefixFilter={false}
                 showResponsibleFilter={false}
-                showStatusFilter={false}
+                showStatusFilter={true}
             />
 
             <div className="flex-1 flex flex-col h-full bg-[#fcfdfe] overflow-hidden">
@@ -410,6 +516,7 @@ const InvoicesView: React.FC<InvoicesViewProps> = ({ onViewCase }) => {
                                 onToggle={toggleVisibleField}
                                 iconOnly
                             />
+                            <ColumnResizeToggle />
 
                             {activeFilterCount > 0 && (
                                 <div className="flex items-center gap-2 px-3 py-1 bg-sky-50 border border-sky-100 rounded-full">
@@ -433,15 +540,112 @@ const InvoicesView: React.FC<InvoicesViewProps> = ({ onViewCase }) => {
                 <div className="flex-1 overflow-y-auto p-8 relative">
                     <div className="max-w-7xl mx-auto">
                         <div className="flex items-center justify-between bg-white border border-[#cfdbe7] rounded-xl px-4 py-3 shadow-sm mb-3 gap-4">
-                            <div className="relative flex-1 min-w-0">
+                            <div className="relative min-w-0 flex-[1.2]">
                                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                                 <input
                                     type="text"
                                     value={filters.searchQuery}
-                                    onChange={(e) => setFilters(prev => ({ ...prev, searchQuery: e.target.value }))}
-                                    placeholder="Buscar por Nº factura, cliente, identificador o expediente..."
-                                    className="w-full pl-10 pr-3 py-2 border border-slate-200 rounded-lg text-sm font-normal text-slate-700 bg-slate-50 shadow-sm focus:bg-white focus:ring-2 focus:ring-sky-500/10 focus:border-sky-500 outline-none transition-all"
+                                    onChange={(e) => {
+                                        if (isIdentifierPinned) return;
+                                        const nextValue = e.target.value;
+                                        setFilters(prev => ({ ...prev, searchQuery: nextValue }));
+                                        setIsRecentsOpen(false);
+                                        if (!nextValue.trim()) {
+                                            clearIdentifierContext();
+                                        }
+                                    }}
+                                    placeholder="Identificador (DNI/CIF)"
+                                    readOnly={isIdentifierPinned}
+                                    className={`w-full pl-10 py-2 border rounded-lg text-sm font-normal text-slate-700 shadow-sm outline-none transition-all placeholder:text-slate-400 ${isIdentifierPinned
+                                        ? 'pr-[220px] bg-sky-50 border-sky-200'
+                                        : 'pr-[220px] border-slate-200 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-sky-500/10 focus:border-sky-500'
+                                        }`}
                                 />
+                                <div className="absolute right-2 top-1/2 -translate-y-1/2 z-10 flex items-center gap-2">
+                                    {(filters.searchQuery || '').trim().length > 0 && (
+                                        <InputClearButton
+                                            onClick={() => {
+                                                setFilters(prev => ({ ...prev, searchQuery: '' }));
+                                                setIsRecentsOpen(false);
+                                                clearIdentifierContext();
+                                            }}
+                                            title="Limpiar búsqueda"
+                                        />
+                                    )}
+                                    <button
+                                        type="button"
+                                        onMouseDown={(e) => {
+                                            e.preventDefault();
+                                            if (isIdentifierPinned) {
+                                                unpinClientIdentifier();
+                                                return;
+                                            }
+                                            const candidate = normalizeRecentClientIdentifier((filters.searchQuery || '').trim() || pinnedIdentifier || '');
+                                            if (!candidate) return;
+                                            setPinnedClientIdentifier(undefined, candidate, selectedClientName || '');
+                                        }}
+                                        className={`inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors ${isIdentifierPinned
+                                            ? 'border-sky-300 bg-sky-100 text-sky-700'
+                                            : 'border-slate-200 bg-white text-slate-400 hover:text-sky-600 hover:border-sky-200'
+                                            }`}
+                                        title={isIdentifierPinned ? "Identificador fijado (clic para desfijar)" : "Fijar identificador"}
+                                    >
+                                        <Pin className="w-3.5 h-3.5" />
+                                    </button>
+                                    <div ref={recentsRef}>
+                                    <button
+                                        type="button"
+                                        onMouseDown={(e) => {
+                                            e.preventDefault();
+                                            setIsRecentsOpen(v => !v);
+                                        }}
+                                        className="h-8 px-2.5 inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-slate-600 transition-colors"
+                                        title="Identificadores recientes de esta sesión"
+                                    >
+                                        <History className="w-3.5 h-3.5" />
+                                        <span className="text-[10px] font-semibold uppercase tracking-wider">Recientes</span>
+                                        <ChevronDown className={`w-3 h-3 transition-transform ${isRecentsOpen ? 'rotate-180' : ''}`} />
+                                    </button>
+
+                                    {isRecentsOpen && (
+                                        <div className="absolute z-[110] right-0 top-[calc(100%+8px)] w-72 rounded-xl border border-slate-200 bg-white shadow-xl overflow-hidden">
+                                            <div className="px-3 py-2 border-b border-slate-100 text-[10px] font-bold uppercase tracking-wider text-slate-500 bg-slate-50">
+                                                Ultimos identificadores
+                                            </div>
+                                            {recentIdentifiers.length === 0 ? (
+                                                <div className="px-3 py-3 text-xs text-slate-400">
+                                                    Sin identificadores en esta sesion.
+                                                </div>
+                                            ) : (
+                                                <div className="max-h-56 overflow-auto">
+                                                    {recentIdentifiers.map((recent) => (
+                                                        <button
+                                                            key={recent.identifier}
+                                                            type="button"
+                                    onMouseDown={(e) => {
+                                        e.preventDefault();
+                                        handleSelectRecentIdentifier(recent.identifier);
+                                        emitHelpAction('RECENT_IDENTIFIER_SELECTED');
+                                    }}
+                                                            className="w-full text-left px-3 py-2 hover:bg-sky-50 border-b border-slate-50 last:border-0"
+                                                        >
+                                                            <div className="flex items-center gap-3">
+                                                                <span className="text-sm font-semibold text-slate-700">{recent.identifier}</span>
+                                                                <span className="text-xs text-slate-500 truncate ml-auto">{recent.displayName || '-'}</span>
+                                                            </div>
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="flex-1 min-w-0">
+                                <div className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm font-normal text-slate-700 bg-slate-50 shadow-sm truncate">
+                                    {selectedClientName || 'Nombre del identificador seleccionado'}
+                                </div>
                             </div>
                         </div>
 

@@ -77,10 +77,14 @@ const PredictiveInput: React.FC<{
         setInputValue(displayValue || '');
     }, [displayValue]);
 
-    const filteredSuggestions = suggestions.filter(s =>
-        s.label.toLowerCase().includes(inputValue.toLowerCase()) ||
-        (s.sublabel && s.sublabel.toLowerCase().includes(inputValue.toLowerCase()))
-    ).slice(0, 5);
+    const lowerInput = (inputValue || '').toLowerCase();
+    const filteredSuggestions = suggestions
+        .filter(s => {
+            const suggestionLabel = String((s as any)?.label ?? '').toLowerCase();
+            const suggestionSubLabel = String((s as any)?.sublabel ?? '').toLowerCase();
+            return suggestionLabel.includes(lowerInput) || suggestionSubLabel.includes(lowerInput);
+        })
+        .slice(0, 5);
 
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {

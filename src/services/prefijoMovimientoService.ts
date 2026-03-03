@@ -12,6 +12,7 @@ import {
 } from 'firebase/firestore';
 import { db } from './firebase';
 import { PrefijoMovimiento } from '../types';
+import { assertConfigDestructiveAllowed } from '@/config/configProtection';
 
 const COLLECTION_NAME = 'prefijoMovimientos';
 
@@ -255,8 +256,12 @@ export async function updatePrefijoMovimiento(
 /**
  * Delete a PrefijoMovimiento
  */
-export async function deletePrefijoMovimiento(id: string): Promise<void> {
+export async function deletePrefijoMovimiento(
+    id: string,
+    options?: { bypassToken?: string }
+): Promise<void> {
     try {
+        assertConfigDestructiveAllowed(`movimiento predefinido ${id}`, options);
         // Get current data to check if deletion is allowed
         const current = await getPrefijoMovimientoById(id);
         if (!current) {

@@ -3,12 +3,21 @@ import type { Client as ClientV2, ClientCreateInput } from '@/types/client';
 import { searchClients, createClient } from '@/services/clientService';
 import { searchArchiveClients, rescueArchiveClient } from '@/services/clientArchiveService';
 import { isMostlyNumeric, normalizeText } from '@/utils/normalize';
-import { Search, X, History, ChevronDown } from 'lucide-react';
+import { Search, History, ChevronDown, Pin } from 'lucide-react';
 import { useAppContext } from '@/contexts/AppContext';
 import { Button } from '@/components/ui/Button';
+import { InputClearButton } from '@/components/ui/InputClearButton';
 import {
+    clearIdentifierContext,
     pushRecentClientIdentifier,
     readRecentClientIdentifiers,
+    readIsIdentifierPinned,
+    readPinnedIdentifier,
+    readEffectiveClientIdentifier,
+    setPinnedClientIdentifier,
+    unpinClientIdentifier,
+    getIdentifierContextChangedEventName,
+    setActiveClientIdentifier,
     normalizeRecentClientIdentifier,
     type RecentClientIdentifierEntry
 } from '@/utils/recentClientIdentifiers';
@@ -73,6 +82,8 @@ export const ClientTypeahead: React.FC<Props> = ({
     const [rescuingArchiveId, setRescuingArchiveId] = useState<string | null>(null);
     const [recentIdentifiers, setRecentIdentifiers] = useState<RecentClientIdentifierEntry[]>([]);
     const [isRecentsOpen, setIsRecentsOpen] = useState(false);
+    const [isIdentifierPinned, setIsIdentifierPinned] = useState(false);
+    const [pinnedIdentifier, setPinnedIdentifier] = useState<string | null>(null);
 
     const containerRef = useRef<HTMLDivElement | null>(null);
     const recentsRef = useRef<HTMLDivElement | null>(null);
@@ -169,6 +180,28 @@ export const ClientTypeahead: React.FC<Props> = ({
         reloadRecents();
     }, [currentUser?.id, savedClients]);
 
+    useEffect(() => {
+        const refreshIdentifierContext = () => {
+            const pinned = readIsIdentifierPinned();
+            const pinnedValue = readPinnedIdentifier();
+            const effective = readEffectiveClientIdentifier();
+            setIsIdentifierPinned(pinned);
+            setPinnedIdentifier(pinnedValue);
+            if (pinned && pinnedValue) {
+                setInput(pinnedValue);
+                setOpen(false);
+                setIsRecentsOpen(false);
+                if (allowFreeText && onFreeTextChange) onFreeTextChange(pinnedValue);
+            } else if (!input && effective) {
+                setInput(effective);
+                if (allowFreeText && onFreeTextChange) onFreeTextChange(effective);
+            }
+        };
+        refreshIdentifierContext();
+        window.addEventListener(getIdentifierContextChangedEventName(), refreshIdentifierContext as EventListener);
+        return () => window.removeEventListener(getIdentifierContextChangedEventName(), refreshIdentifierContext as EventListener);
+    }, [allowFreeText, input, onFreeTextChange]);
+
     const showQuickCreate = useMemo(() => {
         if (!enableQuickCreate) return false;
         const q = debounced.trim();
@@ -180,11 +213,15 @@ export const ClientTypeahead: React.FC<Props> = ({
     }, [enableQuickCreate, debounced, shouldSearch, items.length, archiveItems.length]);
 
     const handleChange = (v: string) => {
+        if (isIdentifierPinned) return;
         setInput(v);
         setOpen(true);
         setIsRecentsOpen(false);
         if (allowFreeText && onFreeTextChange) onFreeTextChange(v);
-        if (!v && onClear) onClear();
+        if (!v) {
+            clearIdentifierContext();
+            if (onClear) onClear();
+        }
     };
 
     const pick = (c: ClientV2) => {
@@ -199,6 +236,11 @@ export const ClientTypeahead: React.FC<Props> = ({
         const identifier = c.documento || c.nif || '';
         if (identifier) {
             const updated = pushRecentClientIdentifier(currentUser?.id, identifier, c.nombre || '');
+            if (isIdentifierPinned) {
+                setPinnedClientIdentifier(currentUser?.id, identifier, c.nombre || '');
+            } else {
+                setActiveClientIdentifier(currentUser?.id, identifier, c.nombre || '');
+            }
             setRecentIdentifiers(updated.map(entry => ({
                 ...entry,
                 displayName: entry.displayName || getDisplayNameForIdentifier(entry.identifier)
@@ -225,6 +267,11 @@ export const ClientTypeahead: React.FC<Props> = ({
         setOpen(false);
         setIsRecentsOpen(false);
         const updated = pushRecentClientIdentifier(currentUser?.id, recent.identifier, recent.displayName);
+        if (isIdentifierPinned) {
+            setPinnedClientIdentifier(currentUser?.id, recent.identifier, recent.displayName);
+        } else {
+            setActiveClientIdentifier(currentUser?.id, recent.identifier, recent.displayName);
+        }
         setRecentIdentifiers(updated.map(entry => ({
             ...entry,
             displayName: entry.displayName || getDisplayNameForIdentifier(entry.identifier)
@@ -279,22 +326,45 @@ export const ClientTypeahead: React.FC<Props> = ({
                     placeholder={placeholder}
                     onChange={(e) => handleChange(e.target.value)}
                     onFocus={() => setOpen(true)}
-                    className={`w-full pl-11 pr-36 border border-slate-200 rounded-xl text-sm font-normal text-slate-700 bg-white shadow-sm focus:ring-4 focus:ring-sky-500/10 focus:border-sky-500 outline-none transition-all disabled:bg-slate-50 disabled:cursor-not-allowed ${compact ? 'py-1.5' : 'py-2.5'
+                    readOnly={isIdentifierPinned}
+                    className={`w-full pl-11 border rounded-xl text-sm font-normal text-slate-700 shadow-sm outline-none transition-all disabled:bg-slate-50 disabled:cursor-not-allowed ${isIdentifierPinned
+                        ? 'pr-[220px] border-sky-200 bg-sky-50'
+                        : 'pr-[220px] border-slate-200 bg-white focus:ring-4 focus:ring-sky-500/10 focus:border-sky-500'
+                        } ${compact ? 'py-1.5' : 'py-2.5'
                         }`}
                 />
-                {(valueClientId || input) && onClear && (
+                <div className="absolute right-2 top-1/2 -translate-y-1/2 z-10 flex items-center gap-2">
+                    {(valueClientId || input) && onClear && (
+                        <InputClearButton
+                            onClick={() => {
+                                setInput('');
+                                clearIdentifierContext();
+                                onClear();
+                            }}
+                            title="Limpiar campo"
+                        />
+                    )}
                     <button
                         type="button"
-                        onClick={() => {
-                            setInput('');
-                            onClear();
+                        onMouseDown={(e) => {
+                            e.preventDefault();
+                            if (isIdentifierPinned) {
+                                unpinClientIdentifier();
+                                return;
+                            }
+                            const candidate = normalizeRecentClientIdentifier(input || pinnedIdentifier || '');
+                            if (!candidate) return;
+                            setPinnedClientIdentifier(currentUser?.id, candidate, '');
                         }}
-                        className="absolute right-24 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                        className={`inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors ${isIdentifierPinned
+                            ? 'border-sky-300 bg-sky-100 text-sky-700'
+                            : 'border-slate-200 bg-white text-slate-400 hover:text-sky-600 hover:border-sky-200'
+                            }`}
+                        title={isIdentifierPinned ? 'Identificador fijado (clic para desfijar)' : 'Fijar identificador'}
                     >
-                        <X className="w-4 h-4" />
+                        <Pin className="w-3.5 h-3.5" />
                     </button>
-                )}
-                <div ref={recentsRef} className="absolute right-2 top-1/2 -translate-y-1/2">
+                    <div ref={recentsRef}>
                     <button
                         type="button"
                         onMouseDown={(e) => {
@@ -342,6 +412,7 @@ export const ClientTypeahead: React.FC<Props> = ({
                             )}
                         </div>
                     )}
+                    </div>
                 </div>
             </div>
 

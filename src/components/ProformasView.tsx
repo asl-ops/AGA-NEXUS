@@ -14,6 +14,7 @@ import { PremiumFilterButton } from './ui/PremiumFilterButton';
 import { CopyAction } from './ui/ActionFeedback';
 import Breadcrumbs from './ui/Breadcrumbs';
 import { ColumnSelectorMenu, type ColumnSelectorOption } from './ui/ColumnSelectorMenu';
+import { ColumnResizeToggle } from './ui/ColumnResizeToggle';
 import { navigateToModule } from '@/utils/moduleNavigation';
 import { useConfirmation } from '@/hooks/useConfirmation';
 import ConfirmationModal from './ConfirmationModal';
@@ -296,6 +297,7 @@ const ProformasView: React.FC<ProformasViewProps> = () => {
                                     onToggle={toggleVisibleField}
                                     iconOnly
                                 />
+                                <ColumnResizeToggle />
 
                             {/* Active filter chips */}
                             {activeFilterCount > 0 && (

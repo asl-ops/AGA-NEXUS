@@ -127,14 +127,14 @@ export const IdentifierField: React.FC<IdentifierFieldProps> = ({
                         <div className="flex items-center gap-0.5">
                             <div className="relative inline-block">
                                 {showNifPreview && (
-                                    <div className="absolute bottom-full right-0 mb-3 w-44 bg-white/95 backdrop-blur-md border border-slate-100 shadow-2xl rounded-2xl p-4 transition-all duration-300 z-[60] origin-bottom-right animate-in fade-in zoom-in-95">
+                                    <div className="absolute top-full right-0 mt-3 w-44 bg-white/95 backdrop-blur-md border border-slate-100 shadow-2xl rounded-2xl p-4 transition-all duration-300 z-[60] origin-top-right animate-in fade-in zoom-in-95">
                                         <div className="flex flex-col">
                                             <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 whitespace-normal leading-none mb-2">NIF COMPLETO</span>
                                             <span className="text-xl font-mono text-sky-600 tracking-tight font-medium">
                                                 {fullNif}
                                             </span>
                                         </div>
-                                        <div className="absolute bottom-[-6px] right-4 size-3 bg-white border-r border-b border-slate-100 rotate-45" />
+                                        <div className="absolute top-[-6px] right-4 size-3 bg-white border-l border-t border-slate-100 rotate-45" />
                                     </div>
                                 )}
                                 <button

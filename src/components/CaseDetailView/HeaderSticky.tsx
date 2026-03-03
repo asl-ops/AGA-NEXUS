@@ -23,6 +23,7 @@ interface HeaderStickyProps {
     duplicateOf?: string;
     onNewCaseSameClient?: () => void;
     onNewCaseDifferentClient?: () => void;
+    showNewCaseActions?: boolean;
 }
 
 export const HeaderSticky: React.FC<HeaderStickyProps> = ({
@@ -44,7 +45,8 @@ export const HeaderSticky: React.FC<HeaderStickyProps> = ({
     onAddResponsible,
     duplicateOf,
     onNewCaseSameClient,
-    onNewCaseDifferentClient
+    onNewCaseDifferentClient,
+    showNewCaseActions = true
 }) => {
     const [showShortcuts, setShowShortcuts] = useState(false);
     const shortcutsRef = useRef<HTMLDivElement>(null);
@@ -168,86 +170,91 @@ export const HeaderSticky: React.FC<HeaderStickyProps> = ({
 
             </div>
 
-            <div className="flex items-center gap-2">
-                {onNewCaseSameClient && (
+            <div className="flex flex-col items-end gap-2">
+                <div className="flex items-center gap-2">
                     <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={onNewCaseSameClient}
-                        title="Nuevo con mismo cliente y prefijo (Ctrl/Cmd+N)"
-                        className="flex items-center gap-2 px-4 py-2 border rounded-xl transition-all text-xs font-bold shadow-sm active:scale-95 bg-sky-50 text-sky-700 border-sky-200 hover:bg-sky-100 hover:text-sky-800 active:bg-sky-100"
+                        variant="primary"
+                        size="icon"
+                        onClick={onSave}
+                        isLoading={isSaving}
+                        title={isSaving ? 'Guardando...' : 'Guardar y cerrar (Ctrl/Cmd+Enter)'}
+                        className="shrink-0"
                     >
-                        <Plus size={14} className="stroke-[3]" />
-                        Nuevo (mismo cliente)
+                        <ShieldCheck size={18} />
                     </Button>
-                )}
-                {onNewCaseDifferentClient && (
-                    <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={onNewCaseDifferentClient}
-                        title="Nuevo con cliente distinto (Ctrl/Cmd+Shift+N)"
-                        className="flex items-center gap-2 px-4 py-2 border rounded-xl transition-all text-xs font-bold shadow-sm active:scale-95 bg-white text-slate-700 border-slate-300 hover:bg-slate-100 hover:text-slate-800 active:bg-slate-100"
-                    >
-                        <Plus size={14} className="stroke-[3]" />
-                        Nuevo (otro cliente)
-                    </Button>
-                )}
-                <div className="w-px h-6 bg-slate-200 mx-1" />
 
-                <Button
-                    variant="primary"
-                    size="icon"
-                    onClick={onSave}
-                    isLoading={isSaving}
-                    title={isSaving ? 'Guardando...' : 'Guardar y cerrar (Ctrl/Cmd+Enter)'}
-                    className="shrink-0"
-                >
-                    <ShieldCheck size={18} />
-                </Button>
+                    <div className="relative" ref={shortcutsRef}>
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => setShowShortcuts(v => !v)}
+                            title="Atajos de teclado"
+                            className="text-slate-400 hover:text-slate-700"
+                        >
+                            <HelpCircle size={18} />
+                        </Button>
 
-                <div className="relative" ref={shortcutsRef}>
+                        {showShortcuts && (
+                            <div className="absolute right-0 top-[calc(100%+8px)] w-72 rounded-xl border border-slate-200 bg-white shadow-xl z-50 p-3">
+                                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">Atajos</p>
+                                <div className="space-y-1.5 text-xs text-slate-600">
+                                    <p><span className="font-bold text-slate-800">Ctrl/Cmd+Enter</span> guardar y cerrar</p>
+                                    <p><span className="font-bold text-slate-800">Ctrl/Cmd+N</span> nuevo con mismo cliente</p>
+                                    <p><span className="font-bold text-slate-800">Ctrl/Cmd+Shift+N</span> nuevo con otro cliente</p>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
                     <Button
                         variant="ghost"
                         size="icon"
-                        onClick={() => setShowShortcuts(v => !v)}
-                        title="Atajos de teclado"
-                        className="text-slate-400 hover:text-slate-700"
+                        onClick={onPrint}
+                        title="Imprimir"
+                        className="text-slate-500 hover:text-slate-700"
                     >
-                        <HelpCircle size={18} />
+                        <Printer size={18} />
                     </Button>
 
-                    {showShortcuts && (
-                        <div className="absolute right-0 top-[calc(100%+8px)] w-72 rounded-xl border border-slate-200 bg-white shadow-xl z-50 p-3">
-                            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">Atajos</p>
-                            <div className="space-y-1.5 text-xs text-slate-600">
-                                <p><span className="font-bold text-slate-800">Ctrl/Cmd+Enter</span> guardar y cerrar</p>
-                                <p><span className="font-bold text-slate-800">Ctrl/Cmd+N</span> nuevo con mismo cliente</p>
-                                <p><span className="font-bold text-slate-800">Ctrl/Cmd+Shift+N</span> nuevo con otro cliente</p>
-                            </div>
-                        </div>
-                    )}
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={onClose}
+                        title={hasUnsavedChanges ? 'Cerrar y descartar cambios' : 'Cerrar'}
+                        className="text-slate-500 hover:text-rose-600 hover:bg-rose-50"
+                    >
+                        <X size={18} />
+                    </Button>
                 </div>
 
-                <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={onPrint}
-                    title="Imprimir"
-                    className="text-slate-500 hover:text-slate-700"
-                >
-                    <Printer size={18} />
-                </Button>
-
-                <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={onClose}
-                    title={hasUnsavedChanges ? 'Cerrar y descartar cambios' : 'Cerrar'}
-                    className="text-slate-500 hover:text-rose-600 hover:bg-rose-50"
-                >
-                    <X size={18} />
-                </Button>
+                {showNewCaseActions && (onNewCaseSameClient || onNewCaseDifferentClient) && (
+                    <div className="flex flex-col items-end gap-2 w-full">
+                        {onNewCaseSameClient && (
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={onNewCaseSameClient}
+                                title="Nuevo con mismo cliente y prefijo (Ctrl/Cmd+N)"
+                                className="flex items-center justify-center gap-2 w-full px-4 py-2 border rounded-xl transition-all text-xs font-bold shadow-sm active:scale-95 bg-sky-50 text-sky-700 border-sky-200 hover:bg-sky-100 hover:text-sky-800 active:bg-sky-100"
+                            >
+                                <Plus size={14} className="stroke-[3]" />
+                                Nuevo (mismo cliente)
+                            </Button>
+                        )}
+                        {onNewCaseDifferentClient && (
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={onNewCaseDifferentClient}
+                                title="Nuevo con cliente distinto (Ctrl/Cmd+Shift+N)"
+                                className="flex items-center justify-center gap-2 w-full px-4 py-2 border rounded-xl transition-all text-xs font-bold shadow-sm active:scale-95 bg-white text-slate-700 border-slate-300 hover:bg-slate-100 hover:text-slate-800 active:bg-slate-100"
+                            >
+                                <Plus size={14} className="stroke-[3]" />
+                                Nuevo (otro cliente)
+                            </Button>
+                        )}
+                    </div>
+                )}
             </div>
         </div>
     );

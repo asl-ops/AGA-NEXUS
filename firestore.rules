@@ -1,0 +1,45 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // CONFIGURACION CRITICA (blindada)
+    match /prefixes/{prefixId} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn();
+      allow delete: if false;
+
+      match /movements/{movementId} {
+        allow read: if isSignedIn();
+        allow create, update: if isSignedIn();
+        allow delete: if false;
+      }
+    }
+
+    match /prefijoMovimientos/{docId} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn();
+      allow delete: if false;
+    }
+
+    match /movimientoCuentasContables/{docId} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn();
+      allow delete: if false;
+    }
+
+    match /movimientos/{docId} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn();
+      allow delete: if false;
+    }
+
+    // Resto de colecciones: mantener comportamiento autenticado.
+    match /{document=**} {
+      allow read, write: if isSignedIn();
+    }
+  }
+}
+

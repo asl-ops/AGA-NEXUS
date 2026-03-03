@@ -1,15 +1,17 @@
 import { db } from '../services/firebase';
 import { collection, getDocs, doc, setDoc, deleteDoc, query, where } from 'firebase/firestore';
 import { PrefixConfig } from '../types';
+import { assertConfigDestructiveAllowed } from '@/config/configProtection';
 
 const prefixesCollection = collection(db, 'prefixes');
 
-// Fetch only active prefixes (for New Case Wizard, etc.)
+// Fetch active prefixes (legacy-compatible: missing isActive => active)
 export const getActivePrefixes = async (): Promise<PrefixConfig[]> => {
     try {
-        const q = query(prefixesCollection, where('isActive', '==', true));
-        const snapshot = await getDocs(q);
-        const data: PrefixConfig[] = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as PrefixConfig));
+        const snapshot = await getDocs(prefixesCollection);
+        const data: PrefixConfig[] = snapshot.docs
+            .map(doc => ({ ...doc.data(), id: doc.id } as PrefixConfig))
+            .filter(prefix => prefix.isActive !== false);
         return data.sort((a, b) => a.code.localeCompare(b.code));
     } catch (error) {
         console.error('Error fetching active prefixes:', error);
@@ -132,8 +134,12 @@ export const bulkImportPrefixes = async (prefixes: any[]): Promise<void> => {
 };
 
 // Delete a prefix (Logical deletion if used, Physical if fresh)
-export const deletePrefix = async (prefixId: string): Promise<void> => {
+export const deletePrefix = async (
+    prefixId: string,
+    options?: { bypassToken?: string }
+): Promise<void> => {
     try {
+        assertConfigDestructiveAllowed(`prefijo ${prefixId}`, options);
         const prefixDocRef = doc(prefixesCollection, prefixId);
 
         // Safety check: Is this prefix used in any cases?
@@ -159,6 +165,9 @@ export const deletePrefix = async (prefixId: string): Promise<void> => {
  */
 export const updatePrefixStatus = async (prefixId: string, active: boolean): Promise<void> => {
     try {
+        if (!active) {
+            assertConfigDestructiveAllowed(`desactivación de prefijo ${prefixId}`);
+        }
         const prefixDocRef = doc(prefixesCollection, prefixId);
         await setDoc(prefixDocRef, { isActive: active, updatedAt: new Date().toISOString() }, { merge: true });
     } catch (error) {

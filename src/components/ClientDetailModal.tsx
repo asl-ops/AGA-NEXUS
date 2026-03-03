@@ -605,13 +605,13 @@ const ClientDetailModal: React.FC<Props> = ({ clientId, onClose, onSaved, onSele
                                 disabled={Boolean(verification?.by)}
                                 title={verification?.by ? `Verificado por ${verification.by}` : 'Verificar cliente'}
                                 className={`h-8 min-w-0 px-2.5 rounded-lg ${verification?.by
-                                    ? 'border-emerald-200 text-emerald-600 bg-emerald-50 hover:bg-emerald-50 hover:border-emerald-200'
-                                    : 'border-slate-200 text-slate-400 hover:border-slate-300 hover:text-slate-500 hover:bg-slate-50'
+                                    ? 'border-emerald-600 text-emerald-700 bg-emerald-100 hover:bg-emerald-100 hover:border-emerald-600'
+                                    : 'border-red-500 text-red-600 bg-red-50 hover:bg-red-100 hover:border-red-600 hover:text-red-700'
                                     }`}
                             >
                                 <Check size={14} />
                             </Button>
-                            <span className={`text-[9px] font-bold uppercase tracking-widest ${verification?.by ? 'text-emerald-600' : 'text-slate-300'}`}>
+                            <span className={`text-[9px] font-bold uppercase tracking-widest ${verification?.by ? 'text-emerald-700' : 'text-red-600'}`}>
                                 {verification?.by ? `Verificado por ${verification.by}` : 'Pendiente de verificar'}
                             </span>
                         </div>

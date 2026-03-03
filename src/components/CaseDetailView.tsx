@@ -540,6 +540,7 @@ const CaseDetailView: React.FC<CaseDetailViewProps> = ({
                         duplicateOf={duplicateOf ?? undefined}
                         onNewCaseSameClient={handleNewCaseSameClick}
                         onNewCaseDifferentClient={handleNewCaseDifferentClick}
+                        showNewCaseActions={false}
                     />
 
                     {/* Content Area */}

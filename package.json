@@ -1,7 +1,7 @@
 {
   "name": "aga-nexus",
   "private": true,
-  "version": "1.0.0",
+  "version": "0.1.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -22,7 +22,9 @@
     "import-expedientes-abiertos-depurados": "node scripts/import-expedientes-abiertos-depurados.cjs",
     "import-saldos-contables-depurados": "node scripts/import-saldos-contables-depurados.cjs",
     "import-mayor-clientes-depurado": "node scripts/import-mayor-clientes-depurado.cjs",
-    "import-economic-batch": "node scripts/import-economic-batch.cjs"
+    "import-economic-batch": "node scripts/import-economic-batch.cjs",
+    "deploy:web": "npm run build && npx firebase-tools deploy --only hosting",
+    "deploy:firebase": "npm run build && npx firebase-tools deploy --only hosting,firestore:indexes"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",

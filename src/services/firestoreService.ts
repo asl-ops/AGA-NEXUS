@@ -140,13 +140,17 @@ export const createNewCase = async (
     responsibleId?: string,
     clienteId?: string,
     clientSnapshot?: any,
-    prefixId?: string
+    prefixId?: string,
+    options?: {
+        deferMovementInitialization?: boolean;
+    }
 ): Promise<CaseRecord> => {
     const fileNumber = forcedFileNumber || await getNextFileNumber(category);
+    const shouldDeferMovements = options?.deferMovementInitialization === true;
 
     // Initial movements from prefix (if provided) - ATOMIC INITIALIZATION
     let initialMovements: MovimientoExpediente[] = [];
-    if (prefixId) {
+    if (prefixId && !shouldDeferMovements) {
         try {
             const predefined = await getPrefijoMovimientos(prefixId);
             initialMovements = await Promise.all(predefined.map(async (p, idx) => {
@@ -224,6 +228,57 @@ export const createNewCase = async (
     };
 
     await saveOrUpdateCase(newCase);
+
+    // Fast-path: do not block case creation/navigation while loading prefix movements.
+    if (prefixId && shouldDeferMovements) {
+        void (async () => {
+            try {
+                const predefined = await getPrefijoMovimientos(prefixId);
+                const deferredMovements = await Promise.all(predefined.map(async (p, idx) => {
+                    let finalImporte = p.importePorDefecto || 0;
+
+                    if (!finalImporte) {
+                        try {
+                            const masterMov = await getMovimientoById(prefixId, p.movimientoId);
+                            if (masterMov && masterMov.importePorDefecto) {
+                                finalImporte = masterMov.importePorDefecto;
+                            }
+                        } catch (err) {
+                            console.warn('Deferred init: error fetching master movement fallback amount:', p.movimientoId);
+                        }
+                    }
+
+                    return {
+                        id: `mov_${Date.now()}_${idx}`,
+                        expedienteId: fileNumber,
+                        movimientoId: p.movimientoId,
+                        orden: p.orden,
+                        nombreSnapshot: p.nombre || '',
+                        codigoSnapshot: (p as any).codigo || '',
+                        naturalezaSnapshot: (p as any).naturaleza || Naturaleza.OTRO,
+                        descripcionOverride: p.nombre || '',
+                        importe: roundToTwo(finalImporte),
+                        regimenIva: (p as any).regimenIva || RegimenIVA.SUJETO,
+                        ivaPorcentaje: (p as any).ivaPorcentaje || 21,
+                        estado: EstadoMovimiento.REALIZADO,
+                        facturable: p.categoria === 'OPERATIVO',
+                        fecha: new Date().toISOString(),
+                        createdAt: new Date().toISOString(),
+                        updatedAt: new Date().toISOString()
+                    } as MovimientoExpediente;
+                }));
+
+                const caseDocRef = doc(db, 'cases', fileNumber);
+                await updateDoc(caseDocRef, {
+                    movimientos: deferredMovements,
+                    updatedAt: new Date().toISOString()
+                });
+            } catch (error) {
+                console.warn(`Deferred movement initialization failed for case ${fileNumber}:`, error);
+            }
+        })();
+    }
+
     return newCase;
 };
 

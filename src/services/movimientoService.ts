@@ -4,13 +4,15 @@ import {
     getDocs,
     getDoc,
     addDoc,
+    setDoc,
     updateDoc,
     query,
     where,
     Timestamp
 } from 'firebase/firestore';
 import { db } from './firebase';
-import { Movimiento, MovimientoCuentaContable, Naturaleza, RegimenIVA, RolCuenta } from '../types';
+import { Movimiento, MovimientoCuentaContable, Naturaleza, RegimenIVA, RolCuenta, ModoImporte } from '../types';
+import { assertConfigDestructiveAllowed } from '@/config/configProtection';
 
 const ROOT_COLLECTION = 'prefixes';
 const SUB_COLLECTION = 'movements';
@@ -199,15 +201,17 @@ export async function getMovimientos(prefixId: string): Promise<Movimiento[]> {
 
 /**
  * Get active movimientos only
+ * Legacy-compatible: missing "activo" is considered active.
  */
 export async function getActiveMovimientos(prefixId: string): Promise<Movimiento[]> {
     try {
-        const q = query(getCollectionRef(prefixId), where('activo', '==', true));
-        const querySnapshot = await getDocs(q);
-        return querySnapshot.docs.map(doc => ({
-            id: doc.id,
-            ...doc.data()
-        } as Movimiento));
+        const querySnapshot = await getDocs(getCollectionRef(prefixId));
+        return querySnapshot.docs
+            .map(doc => ({
+                id: doc.id,
+                ...doc.data()
+            } as Movimiento))
+            .filter(movimiento => movimiento.activo !== false);
     } catch (error) {
         console.error('Error getting active movimientos:', error);
         throw error;
@@ -402,8 +406,13 @@ export async function getCuentasContables(movimientoId: string): Promise<Movimie
  * Soft delete a movimiento (set activo = false)
  * Physical deletion is not allowed to maintain traceability
  */
-export async function softDeleteMovimiento(prefixId: string, id: string): Promise<void> {
+export async function softDeleteMovimiento(
+    prefixId: string,
+    id: string,
+    options?: { bypassToken?: string }
+): Promise<void> {
     try {
+        assertConfigDestructiveAllowed(`movimiento ${id} del prefijo ${prefixId}`, options);
         const prefijoMovimientosQuery = query(
             collection(db, 'prefijoMovimientos'),
             where('movimientoId', '==', id)
@@ -493,4 +502,116 @@ export async function migrateGlobalMovementsToPrefix(targetPrefixId: string): Pr
         console.error('Migration error:', error);
         return { migrated, errors: [error.message] };
     }
+}
+
+/**
+ * Recovery utility:
+ * Rebuild prefix catalog from movimientoIds referenced by prefijoMovimientos.
+ * Keeps document IDs to preserve historical references.
+ */
+export async function recoverPrefixCatalogFromPredefinedRefs(prefixId: string): Promise<{ recovered: number; missing: number }> {
+    if (!prefixId) return { recovered: 0, missing: 0 };
+
+    let recovered = 0;
+    let missing = 0;
+
+    const prefijoMovimientosSnapshot = await getDocs(
+        query(collection(db, 'prefijoMovimientos'), where('prefijoId', '==', prefixId))
+    );
+
+    if (prefijoMovimientosSnapshot.empty) {
+        return { recovered: 0, missing: 0 };
+    }
+
+    const referencedIds = Array.from(
+        new Set(
+            prefijoMovimientosSnapshot.docs
+                .map((docSnap) => (docSnap.data() as { movimientoId?: string }).movimientoId)
+                .filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+        )
+    );
+
+    if (referencedIds.length === 0) {
+        return { recovered: 0, missing: 0 };
+    }
+
+    const prefijoMovimientosByMovimientoId = new Map<string, { nombre?: string; importePorDefecto?: number | null }>();
+    for (const docSnap of prefijoMovimientosSnapshot.docs) {
+        const data = docSnap.data() as { movimientoId?: string; nombre?: string; importePorDefecto?: number | null };
+        if (!data.movimientoId || prefijoMovimientosByMovimientoId.has(data.movimientoId)) continue;
+        prefijoMovimientosByMovimientoId.set(data.movimientoId, {
+            nombre: data.nombre,
+            importePorDefecto: data.importePorDefecto
+        });
+    }
+
+    const inferNaturaleza = (name: string): Naturaleza => {
+        const n = name.toUpperCase();
+        if (n.includes('HONORARIO')) return Naturaleza.HONORARIO;
+        if (n.includes('ENTREGA') || n.includes('PROVISION')) return Naturaleza.ENTREGA_A_CUENTA;
+        if (n.includes('INGRESO') || n.includes('TASA') || n.includes('IMPUESTO') || n.includes('DERECHO')) {
+            return Naturaleza.SUPLIDO;
+        }
+        return Naturaleza.HONORARIO;
+    };
+
+    const inferRegimen = (naturaleza: Naturaleza): RegimenIVA => (
+        naturaleza === Naturaleza.HONORARIO ? RegimenIVA.SUJETO : RegimenIVA.NO_SUJETO
+    );
+
+    const buildFallbackMovimiento = (movimientoId: string): Partial<Movimiento> => {
+        const snapshot = prefijoMovimientosByMovimientoId.get(movimientoId);
+        const nombre = (snapshot?.nombre || `Movimiento ${movimientoId.slice(0, 8)}`).trim();
+        const naturaleza = inferNaturaleza(nombre);
+        const regimenIva = inferRegimen(naturaleza);
+        const codigoBase = nombre
+            .toUpperCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^A-Z0-9]+/g, '_')
+            .replace(/^_+|_+$/g, '')
+            .slice(0, 24) || 'MOV_RECUPERADO';
+
+        return {
+            codigo: `${codigoBase}_${movimientoId.slice(-4).toUpperCase()}`,
+            nombre,
+            naturaleza,
+            regimenIva,
+            ivaPorDefecto: naturaleza === Naturaleza.HONORARIO ? 21 : null,
+            afectaFactura: true,
+            imprimibleEnFactura: true,
+            afectaBaseImponible: naturaleza === Naturaleza.HONORARIO,
+            afectaIva: naturaleza === Naturaleza.HONORARIO,
+            modoImporte: ModoImporte.MANUAL,
+            importePorDefecto: snapshot?.importePorDefecto ?? 0,
+            activo: true,
+            legacyId: `RECOVERED_FROM_PREFIJO_${movimientoId}`
+        };
+    };
+
+    for (const movimientoId of referencedIds) {
+        const targetDocRef = doc(db, ROOT_COLLECTION, prefixId, SUB_COLLECTION, movimientoId);
+        const targetDoc = await getDoc(targetDocRef);
+        if (targetDoc.exists()) {
+            continue;
+        }
+
+        const legacyDoc = await getDoc(doc(db, 'movimientos', movimientoId));
+        const legacyData = legacyDoc.exists()
+            ? (legacyDoc.data() as Partial<Movimiento>)
+            : buildFallbackMovimiento(movimientoId);
+
+        if (!legacyDoc.exists()) {
+            missing++;
+        }
+
+        await setDoc(targetDocRef, {
+            ...legacyData,
+            prefixId,
+            updatedAt: Timestamp.now().toDate().toISOString()
+        });
+        recovered++;
+    }
+
+    return { recovered, missing };
 }

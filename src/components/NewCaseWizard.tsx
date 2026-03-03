@@ -5,11 +5,12 @@ import { PrefixConfig, User as UserType } from '../types';
 import { Client } from '../types/client';
 import { getActivePrefixes, getPrefixNextNumber } from '../services/prefixService';
 import { createNewCase } from '../services/firestoreService';
-import { getActiveClients } from '../services/clientService';
-import { getUsers } from '../services/userService';
 import SearchableSelect, { SelectOption } from './ui/SearchableSelect';
 import ConfirmationModal from './ConfirmationModal';
 import { Button } from './ui/Button';
+import { normalizeRecentClientIdentifier, readEffectiveClientIdentifier } from '@/utils/recentClientIdentifiers';
+import { useAppContext } from '@/contexts/AppContext';
+import { ClientTypeahead } from './ClientTypeahead';
 
 interface NewCaseWizardProps {
     isOpen: boolean;
@@ -19,23 +20,25 @@ interface NewCaseWizardProps {
     currentUser?: UserType;
     initialPrefixId?: string;
     initialClientId?: string;
+    forceBlankClientSelection?: boolean;
 }
 
 const LAST_USED_PREFIX_KEY = 'gestor_pro_last_prefix_id';
 
-const NewCaseWizard: React.FC<NewCaseWizardProps> = ({ isOpen, onClose, onCreated, currentUser, initialPrefixId, initialClientId }) => {
+const NewCaseWizard: React.FC<NewCaseWizardProps> = ({ isOpen, onClose, onCreated, users, currentUser, initialPrefixId, initialClientId, forceBlankClientSelection = false }) => {
+    const { savedClients } = useAppContext();
     // Data lists
     const [prefixes, setPrefixes] = useState<PrefixConfig[]>([]);
-    const [clients, setClients] = useState<Client[]>([]);
-    const [responsibles, setResponsibles] = useState<UserType[]>([]);
 
     // Selection state
     const [selectedPrefixId, setSelectedPrefixId] = useState<string>('');
     const [selectedClientId, setSelectedClientId] = useState<string>('');
+    const [selectedClient, setSelectedClient] = useState<Client | null>(null);
     const [responsibleId, setResponsibleId] = useState<string>('');
 
     // Result/Status state
-    const [isLoading, setIsLoading] = useState(false);
+    const [isInitializing, setIsInitializing] = useState(false);
+    const [isCreating, setIsCreating] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [showConfirmClose, setShowConfirmClose] = useState(false);
 
@@ -46,19 +49,13 @@ const NewCaseWizard: React.FC<NewCaseWizardProps> = ({ isOpen, onClose, onCreate
     }, [isOpen]);
 
     const loadInitialData = async () => {
-        setIsLoading(true);
+        setIsInitializing(true);
         setError(null);
         try {
-            // Load Prefixes, Clients, and Responsibles in parallel
-            const [prefixesData, clientsData, usersData] = await Promise.all([
-                getActivePrefixes(),
-                getActiveClients(),
-                getUsers()
-            ]);
+            // Load only what is required at open time.
+            const prefixesData = await getActivePrefixes();
 
             setPrefixes(prefixesData);
-            setClients(clientsData);
-            setResponsibles(usersData);
 
             // Set initial prefix only if explicitly provided
             if (initialPrefixId && prefixesData.length > 0) {
@@ -69,24 +66,39 @@ const NewCaseWizard: React.FC<NewCaseWizardProps> = ({ isOpen, onClose, onCreate
             }
 
             // Preselect client only when context comes from a specific identifier/client explorer
-            if (initialClientId) {
-                const targetClient = clientsData.find(c => c.id === initialClientId);
-                setSelectedClientId(targetClient ? targetClient.id : '');
-            } else {
-                setSelectedClientId('');
-            }
+            const normalizedInitial = normalizeRecentClientIdentifier(initialClientId);
+            const normalizedEffective = normalizeRecentClientIdentifier(readEffectiveClientIdentifier());
+            const preselectedById = initialClientId
+                ? savedClients.find(c => c.id === initialClientId)
+                : null;
+            const preselectedByIdentifier = normalizedInitial
+                ? savedClients.find(c =>
+                    normalizeRecentClientIdentifier(c.documento) === normalizedInitial ||
+                    normalizeRecentClientIdentifier(c.nif) === normalizedInitial
+                )
+                : null;
+            const preselectedByActiveIdentifier = !forceBlankClientSelection && normalizedEffective
+                ? savedClients.find(c =>
+                    normalizeRecentClientIdentifier(c.documento) === normalizedEffective ||
+                    normalizeRecentClientIdentifier(c.nif) === normalizedEffective
+                )
+                : null;
+
+            const resolvedClient = preselectedById || preselectedByIdentifier || preselectedByActiveIdentifier;
+            setSelectedClientId(resolvedClient ? resolvedClient.id : '');
+            setSelectedClient(resolvedClient || null);
 
             // Set initial responsible
             if (currentUser) {
                 setResponsibleId(currentUser.id);
-            } else if (usersData.length > 0) {
-                setResponsibleId(usersData[0].id);
+            } else if (users.length > 0) {
+                setResponsibleId(users[0].id);
             }
         } catch (err) {
             console.error(err);
             setError('Error al cargar datos iniciales. Compruebe su conexión.');
         } finally {
-            setIsLoading(false);
+            setIsInitializing(false);
         }
     };
 
@@ -118,11 +130,11 @@ const NewCaseWizard: React.FC<NewCaseWizardProps> = ({ isOpen, onClose, onCreate
             return;
         }
 
-        setIsLoading(true);
+        setIsCreating(true);
         setError(null);
         try {
             const prefix = prefixes.find(p => p.id === selectedPrefixId);
-            const client = clients.find(c => c.id === selectedClientId);
+            const client = selectedClient || savedClients.find(c => c.id === selectedClientId);
 
             if (!prefix || !client) throw new Error("Datos de selección no válidos");
 
@@ -145,7 +157,8 @@ const NewCaseWizard: React.FC<NewCaseWizardProps> = ({ isOpen, onClose, onCreate
                 responsibleId,
                 client.id,
                 clientSnapshot,
-                prefix.id
+                prefix.id,
+                { deferMovementInitialization: true }
             );
 
             onCreated(newCase.fileNumber);
@@ -155,7 +168,7 @@ const NewCaseWizard: React.FC<NewCaseWizardProps> = ({ isOpen, onClose, onCreate
             console.error(err);
             setError('Error al crear el expediente. Es posible que el número ya se haya asignado.');
         } finally {
-            setIsLoading(false);
+            setIsCreating(false);
         }
     };
 
@@ -180,28 +193,18 @@ const NewCaseWizard: React.FC<NewCaseWizardProps> = ({ isOpen, onClose, onCreate
         return mapped;
     }, [prefixes]);
 
-    const clientOptions = useMemo((): SelectOption[] =>
-        clients.map(c => ({
-            id: c.id,
-            label: c.nombre,
-            subLabel: c.documento || c.nif || 'Sin Identificador',
-            description: c.documento || c.nif,
-            searchValue: `${c.nombre} ${c.documento} ${c.nif} ${c.email} ${c.telefono}`
-        }))
-        , [clients]);
-
     const userOptions = useMemo((): SelectOption[] =>
-        responsibles.map(u => ({
+        users.map(u => ({
             id: u.id,
             label: u.name,
             subLabel: u.role === 'admin' ? 'Administrador' : 'Gestor',
             searchValue: `${u.name} ${u.initials}`
         }))
-        , [responsibles]);
+        , [users]);
 
-    const currentSelectedClient = useMemo(() =>
-        clients.find(c => c.id === selectedClientId)
-        , [clients, selectedClientId]);
+    const currentSelectedClient = useMemo(() => (
+        selectedClient || savedClients.find(c => c.id === selectedClientId) || null
+    ), [selectedClient, savedClients, selectedClientId]);
 
     if (!isOpen) return null;
 
@@ -249,13 +252,20 @@ const NewCaseWizard: React.FC<NewCaseWizardProps> = ({ isOpen, onClose, onCreate
                             </div>
                         </div>
 
-                        <SearchableSelect
-                            label="Seleccionar Cliente"
-                            options={clientOptions}
-                            value={selectedClientId}
-                            onChange={setSelectedClientId}
+                        <ClientTypeahead
+                            valueClientId={selectedClientId}
+                            valueLabel={currentSelectedClient ? (currentSelectedClient.nombre || currentSelectedClient.legalName || '') : ''}
                             placeholder="Buscar cliente por nombre o DNI..."
-                            loading={isLoading}
+                            disabled={isCreating}
+                            onSelect={(client) => {
+                                const selected = client as unknown as Client;
+                                setSelectedClientId(selected.id || '');
+                                setSelectedClient(selected);
+                            }}
+                            onClear={() => {
+                                setSelectedClientId('');
+                                setSelectedClient(null);
+                            }}
                         />
                     </div>
 
@@ -267,7 +277,7 @@ const NewCaseWizard: React.FC<NewCaseWizardProps> = ({ isOpen, onClose, onCreate
                             value={selectedPrefixId}
                             onChange={handlePrefixChange}
                             placeholder="Selecciona un prefijo de expediente"
-                            loading={isLoading}
+                            loading={isInitializing}
                         />
 
                         {/* Responsible Searchable Select */}
@@ -319,8 +329,8 @@ const NewCaseWizard: React.FC<NewCaseWizardProps> = ({ isOpen, onClose, onCreate
                         size="lg"
                         className="flex-[2]"
                         onClick={handleCreate}
-                        disabled={isLoading || !selectedPrefixId || !selectedClientId || !responsibleId}
-                        isLoading={isLoading}
+                        disabled={isCreating || !selectedPrefixId || !selectedClientId || !responsibleId}
+                        isLoading={isCreating}
                         icon={Check}
                     >
                         Crear expediente

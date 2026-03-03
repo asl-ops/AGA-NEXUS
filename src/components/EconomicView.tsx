@@ -3,6 +3,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import EconomicFiltersPanel, { EconomicFilters } from './EconomicFiltersPanel';
 import { useEconomic } from '@/hooks/useEconomic';
 import { useToast } from '@/hooks/useToast';
+import { useAppContext } from '@/contexts/AppContext';
 import { ClientTypeahead } from '@/components/ClientTypeahead';
 import PaginationControls, { PageSize } from '@/components/PaginationControls';
 import KPICards from './economic/KPICards';
@@ -12,23 +13,28 @@ import {
     X,
     Euro,
     Wallet,
-    Copy,
-    ArrowUp,
-    ArrowDown
+    Copy
 } from 'lucide-react';
 import { BackToHubButton } from './ui/BackToHubButton';
 import { BackToClientNavigationButton } from './ui/BackToClientNavigationButton';
 import { PremiumFilterButton } from './ui/PremiumFilterButton';
 import { Button } from './ui/Button';
 import { CopyAction } from './ui/ActionFeedback';
+import { ResizableExplorerTable, type ExplorerColumn } from './ui/ResizableExplorerTable';
 import { navigateToModule } from '@/utils/moduleNavigation';
 import { getClientNavigationReturnPath, saveClientNavigationContext } from '@/utils/clientNavigationContext';
+import { normalizeRecentClientIdentifier, readActiveClientIdentifier } from '@/utils/recentClientIdentifiers';
 
 // Safe Formatters
 const formatCurrency = (value?: number) =>
     typeof value === 'number' && !isNaN(value)
-        ? value.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €'
+        ? new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR' }).format(value)
         : '—';
+
+const formatLedgerDebitCredit = (value?: number) => {
+    if (typeof value !== 'number' || Number.isNaN(value) || value === 0) return '';
+    return new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR' }).format(value);
+};
 
 const formatCompactCurrency = (value?: number) => {
     if (typeof value !== 'number' || Number.isNaN(value)) return '0,00 €';
@@ -53,12 +59,25 @@ const formatDate = (value?: any) => {
     }
 };
 
+const getTimestamp = (value?: any): number | null => {
+    if (!value) return null;
+    try {
+        const d = value instanceof Date ? value : (value?.toDate ? value.toDate() : new Date(value));
+        const t = d?.getTime?.();
+        return Number.isFinite(t) ? t : null;
+    } catch {
+        return null;
+    }
+};
+
 type TabType = 'expedientes' | 'facturas';
 type AgaTabType = 'expedientesAbiertos' | 'facturasExpedientes' | 'saldoContable';
-type LedgerSortDirection = 'asc' | 'desc';
+type SortDirection = 'asc' | 'desc';
+type LedgerSortKey = 'fecha' | 'asiento' | 'documento' | 'descripcion' | 'debe' | 'haber' | 'saldo';
 
 const EconomicView: React.FC = () => {
     const { addToast } = useToast();
+    const { savedClients } = useAppContext();
 
     // -- State --
     const [isFilterPanelOpen, setIsFilterPanelOpen] = useState(() => {
@@ -80,7 +99,10 @@ const EconomicView: React.FC = () => {
         deliveryNoteStatus: 'all',
         invoiceStatus: 'all'
     });
-    const [ledgerSortDirection, setLedgerSortDirection] = useState<LedgerSortDirection>('desc');
+    const [ledgerSort, setLedgerSort] = useState<{ key: LedgerSortKey; direction: SortDirection }>({
+        key: 'fecha',
+        direction: 'desc'
+    });
 
     // Calculate active filter count
     const activeFilterCount = useMemo(() => {
@@ -200,18 +222,194 @@ const EconomicView: React.FC = () => {
         });
     }, []);
 
+    useEffect(() => {
+        if (selectedClientId) return;
+        const activeIdentifier = readActiveClientIdentifier();
+        if (!activeIdentifier) return;
+        const normalized = normalizeRecentClientIdentifier(activeIdentifier);
+        const match = savedClients.find(client =>
+            normalizeRecentClientIdentifier(client.documento) === normalized ||
+            normalizeRecentClientIdentifier(client.nif) === normalized
+        );
+        if (!match?.id) return;
+        setSelectedClientId(match.id);
+        setSelectedClientLabel((match.documento ? `${match.documento} — ` : '') + (match.nombre || match.legalName || ''));
+    }, [selectedClientId, savedClients]);
+
     const paginatedCases = getSlice(cases, casesPage);
     const paginatedInvoices = getSlice(invoices, invPage);
     const sortedLedgerEntries = useMemo(() => {
         const copy = [...ledgerEntries];
         copy.sort((a, b) => {
-            const ta = new Date(a.fecha || 0).getTime();
-            const tb = new Date(b.fecha || 0).getTime();
-            if (ledgerSortDirection === 'asc') return ta - tb;
-            return tb - ta;
+            const readValue = (entry: any) => {
+                switch (ledgerSort.key) {
+                    case 'fecha':
+                        return new Date(entry.fecha || 0).getTime();
+                    case 'asiento':
+                        return String(entry.asiento || '');
+                    case 'documento':
+                        return String(entry.documento || '');
+                    case 'descripcion':
+                        return String(entry.descripcion || '');
+                    case 'debe':
+                        return Number(entry.debe || 0);
+                    case 'haber':
+                        return Number(entry.haber || 0);
+                    case 'saldo':
+                        return Number(entry.saldo || 0);
+                    default:
+                        return '';
+                }
+            };
+            const av = readValue(a);
+            const bv = readValue(b);
+            if (typeof av === 'number' && typeof bv === 'number') {
+                return ledgerSort.direction === 'asc' ? av - bv : bv - av;
+            }
+            const result = String(av).localeCompare(String(bv), 'es', { sensitivity: 'base' });
+            return ledgerSort.direction === 'asc' ? result : -result;
         });
         return copy;
-    }, [ledgerEntries, ledgerSortDirection]);
+    }, [ledgerEntries, ledgerSort]);
+
+    const handleLedgerSort = (key: string) => {
+        if (!['fecha', 'asiento', 'documento', 'descripcion', 'debe', 'haber', 'saldo'].includes(key)) return;
+        const nextKey = key as LedgerSortKey;
+        setLedgerSort(prev => ({
+            key: nextKey,
+            direction: prev.key === nextKey && prev.direction === 'asc' ? 'desc' : 'asc'
+        }));
+    };
+
+    const ledgerColumns = useMemo<ExplorerColumn<any>[]>(() => [
+        {
+            id: 'fecha',
+            label: 'Fecha',
+            minWidth: 120,
+            defaultWidth: 140,
+            type: 'text',
+            render: (entry) => formatDate(entry.fecha)
+        },
+        {
+            id: 'asiento',
+            label: 'Asiento',
+            minWidth: 90,
+            defaultWidth: 100,
+            type: 'text',
+            render: (entry) => (
+                <span className="font-mono">{entry.asiento || '—'}</span>
+            )
+        },
+        {
+            id: 'documento',
+            label: 'Documento',
+            minWidth: 120,
+            defaultWidth: 140,
+            type: 'text',
+            render: (entry) => (
+                entry.documento ? (
+                    <CopyAction text={entry.documento}>
+                        <div className="inline-flex items-center gap-1 group/copy whitespace-nowrap">
+                            <span className="font-mono">{entry.documento}</span>
+                            <Copy size={12} className="text-slate-300 group-hover/copy:text-sky-500" />
+                        </div>
+                    </CopyAction>
+                ) : (
+                    '—'
+                )
+            )
+        },
+        {
+            id: 'descripcion',
+            label: 'Concepto',
+            minWidth: 180,
+            defaultWidth: 420,
+            type: 'text',
+            render: (entry) => entry.descripcion || '—'
+        },
+        {
+            id: 'debe',
+            label: 'Debe',
+            minWidth: 120,
+            defaultWidth: 130,
+            align: 'right',
+            type: 'currency',
+            render: (entry) => formatLedgerDebitCredit(Number(entry.debe || 0))
+        },
+        {
+            id: 'haber',
+            label: 'Haber',
+            minWidth: 120,
+            defaultWidth: 130,
+            align: 'right',
+            type: 'currency',
+            render: (entry) => formatLedgerDebitCredit(Number(entry.haber || 0))
+        },
+        {
+            id: 'saldo',
+            label: 'Saldo',
+            minWidth: 130,
+            defaultWidth: 140,
+            align: 'right',
+            type: 'currency',
+            render: (entry) => (
+                <span className="font-mono text-slate-900">{formatCurrency(Number(entry.saldo || 0))}</span>
+            )
+        }
+    ], []);
+
+    const emitHelpError = React.useCallback((error: string) => {
+        window.dispatchEvent(new CustomEvent('aga:help-error', { detail: { error } }));
+    }, []);
+
+    useEffect(() => {
+        if (activeAgaTab === 'expedientesAbiertos' && activeTab === 'expedientes' && casesState === 'ready' && cases.length === 0) {
+            emitHelpError('EMPTY_RESULT');
+        }
+        if (activeAgaTab === 'facturasExpedientes' && activeTab === 'facturas' && invoicesState === 'ready' && invoices.length === 0) {
+            emitHelpError('EMPTY_RESULT');
+        }
+        if (activeAgaTab === 'saldoContable' && ledgerState === 'ready' && ledgerEntries.length === 0) {
+            emitHelpError('EMPTY_RESULT');
+        }
+    }, [
+        activeAgaTab,
+        activeTab,
+        casesState,
+        cases.length,
+        invoicesState,
+        invoices.length,
+        ledgerState,
+        ledgerEntries.length,
+        emitHelpError
+    ]);
+
+    useEffect(() => {
+        const timestamps: number[] = [];
+        cases.forEach(c => {
+            const t = getTimestamp(c.createdAt);
+            if (t !== null) timestamps.push(t);
+        });
+        invoices.forEach(inv => {
+            const t = getTimestamp(inv.createdAt);
+            if (t !== null) timestamps.push(t);
+        });
+        ledgerEntries.forEach(le => {
+            const t = getTimestamp(le.fecha);
+            if (t !== null) timestamps.push(t);
+        });
+        if (timestamps.length === 0) {
+            window.dispatchEvent(new CustomEvent('aga:help-data-range', {
+                detail: { view: 'economico', minDate: null, maxDate: null, sourceLabel: 'Sin rango disponible todavía' }
+            }));
+            return;
+        }
+        const minDate = new Date(Math.min(...timestamps)).toLocaleDateString('es-ES');
+        const maxDate = new Date(Math.max(...timestamps)).toLocaleDateString('es-ES');
+        window.dispatchEvent(new CustomEvent('aga:help-data-range', {
+            detail: { view: 'economico', minDate, maxDate, sourceLabel: 'Integración económico (expedientes, facturas y mayor)' }
+        }));
+    }, [cases, invoices, ledgerEntries]);
 
     // -- Handlers --
     const handleDrillDown = async (type: 'openCases' | 'pendingInvoices' | 'contableBalance') => {
@@ -561,58 +759,19 @@ const EconomicView: React.FC = () => {
                                             <h3 className="text-sm font-semibold text-slate-700">Extracto Mayor del Cliente</h3>
                                             <p className="text-xs text-slate-500 mt-1">Movimientos importados desde mayor contable</p>
                                         </div>
-                                        <div className="overflow-auto max-h-[640px]">
-                                            <table className="w-full text-sm">
-                                                <thead className="sticky top-0 bg-white z-10">
-                                                    <tr className="border-b border-slate-100 text-left bg-slate-50/30">
-                                                        <th className="py-3 px-5 font-semibold text-slate-600 w-36">
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => setLedgerSortDirection(prev => prev === 'asc' ? 'desc' : 'asc')}
-                                                                className="inline-flex items-center gap-1 rounded-md text-slate-600 hover:text-sky-600 transition-colors"
-                                                                title={ledgerSortDirection === 'asc' ? 'Orden ascendente' : 'Orden descendente'}
-                                                            >
-                                                                <span>Fecha</span>
-                                                                {ledgerSortDirection === 'asc' ? (
-                                                                    <ArrowUp className="w-3.5 h-3.5" />
-                                                                ) : (
-                                                                    <ArrowDown className="w-3.5 h-3.5" />
-                                                                )}
-                                                            </button>
-                                                        </th>
-                                                        <th className="py-3 px-5 font-semibold text-slate-600 w-24">Asiento</th>
-                                                        <th className="py-3 px-5 font-semibold text-slate-600 w-28">Documento</th>
-                                                        <th className="py-3 px-5 font-semibold text-slate-600">Concepto</th>
-                                                        <th className="py-3 px-5 font-semibold text-slate-600 w-28 text-right">Debe</th>
-                                                        <th className="py-3 px-5 font-semibold text-slate-600 w-28 text-right">Haber</th>
-                                                        <th className="py-3 px-5 font-semibold text-slate-600 w-28 text-right">Saldo</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody className="divide-y divide-slate-100">
-                                                    {sortedLedgerEntries.map((entry) => (
-                                                        <tr key={entry.id} className="hover:bg-slate-50">
-                                                            <td className="py-3 px-5 text-slate-500">{formatDate(entry.fecha)}</td>
-                                                            <td className="py-3 px-5 font-mono text-slate-600">{entry.asiento || '—'}</td>
-                                                            <td className="py-3 px-5 font-mono text-slate-600">
-                                                                {entry.documento ? (
-                                                                    <CopyAction text={entry.documento}>
-                                                                        <div className="inline-flex items-center gap-1 group/copy">
-                                                                            <span>{entry.documento}</span>
-                                                                            <Copy size={12} className="text-slate-300 group-hover/copy:text-sky-500" />
-                                                                        </div>
-                                                                    </CopyAction>
-                                                                ) : (
-                                                                    '—'
-                                                                )}
-                                                            </td>
-                                                            <td className="py-3 px-5 text-slate-700">{entry.descripcion || '—'}</td>
-                                                            <td className="py-3 px-5 text-right font-mono text-slate-700">{formatCurrency(entry.debe)}</td>
-                                                            <td className="py-3 px-5 text-right font-mono text-slate-700">{formatCurrency(entry.haber)}</td>
-                                                            <td className="py-3 px-5 text-right font-mono text-slate-900">{formatCurrency(entry.saldo)}</td>
-                                                        </tr>
-                                                    ))}
-                                                </tbody>
-                                            </table>
+                                        <div className="overflow-auto max-h-[640px] p-4">
+                                            {ledgerState === 'ready' && ledgerEntries.length > 0 && (
+                                                <ResizableExplorerTable
+                                                    data={sortedLedgerEntries}
+                                                    rowIdKey="id"
+                                                    columns={ledgerColumns}
+                                                    storageKey="economic-ledger-explorer-widths"
+                                                    zebra
+                                                    sortConfig={ledgerSort}
+                                                    onSort={handleLedgerSort}
+                                                    density="normal"
+                                                />
+                                            )}
                                             {ledgerState === 'idle' && (
                                                 <div className="py-12 text-center text-slate-500">Pulsa "Extracto mayor cliente" para cargar el extracto del cliente.</div>
                                             )}

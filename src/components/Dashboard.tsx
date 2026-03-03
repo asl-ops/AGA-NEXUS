@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Copy, Printer, Trash2, ArrowUpRight, Eye, Search, X, MoreHorizontal, FileText, Edit3, Receipt, History, ChevronDown, Hash, Info, FolderPlus, Undo2, Columns2, Package, BadgeEuro } from 'lucide-react';
+import { Copy, Printer, Trash2, ArrowUpRight, Eye, Search, X, MoreHorizontal, FileText, Edit3, Receipt, History, ChevronDown, Hash, Info, FolderPlus, Undo2, Columns2, Package, BadgeEuro, Pin } from 'lucide-react';
 import { useAppContext } from '../contexts/AppContext';
 import { useToast } from '../hooks/useToast';
 import { useBilling } from '../hooks/useBilling';
@@ -17,6 +17,8 @@ import ExpedienteFilterPanel, { ExpedienteFilters } from './ExpedienteFilterPane
 import Breadcrumbs from './ui/Breadcrumbs';
 import { ColumnSelectorMenu, type ColumnSelectorOption } from './ui/ColumnSelectorMenu';
 import { PremiumFilterButton } from './ui/PremiumFilterButton';
+import { InputClearButton } from './ui/InputClearButton';
+import { ColumnResizeToggle } from './ui/ColumnResizeToggle';
 import {
     consumeDashboardReturnContext,
     saveDashboardReturnContext,
@@ -33,8 +35,16 @@ import {
     saveClientNavigationContext
 } from '@/utils/clientNavigationContext';
 import {
+    clearIdentifierContext,
+    getIdentifierContextChangedEventName,
+    readEffectiveClientIdentifier,
+    readIsIdentifierPinned,
+    readPinnedIdentifier,
     pushRecentClientIdentifier,
     readRecentClientIdentifiers,
+    setActiveClientIdentifier,
+    setPinnedClientIdentifier,
+    unpinClientIdentifier,
     normalizeRecentClientIdentifier,
     type RecentClientIdentifierEntry
 } from '@/utils/recentClientIdentifiers';
@@ -163,6 +173,8 @@ const Dashboard: React.FC<DashboardProps> = ({
     const skipOpenSuggestionsOnNextFocusRef = useRef(false);
     const [recentIdentifiers, setRecentIdentifiers] = useState<RecentClientIdentifierEntry[]>([]);
     const [isRecentsOpen, setIsRecentsOpen] = useState(false);
+    const [isIdentifierPinned, setIsIdentifierPinned] = useState(false);
+    const [pinnedIdentifier, setPinnedIdentifier] = useState<string | null>(null);
     const [isClientNavigationActive, setIsClientNavigationActive] = useState(false);
     const [clientNavigationTab, setClientNavigationTab] = useState<ClientNavigationTab>('expedientes');
     const visibleColumnsSet = useMemo(() => new Set(visibleColumns), [visibleColumns]);
@@ -170,6 +182,14 @@ const Dashboard: React.FC<DashboardProps> = ({
     useEffect(() => {
         localStorage.setItem(DASHBOARD_VISIBLE_COLUMNS_KEY, JSON.stringify(visibleColumns));
     }, [visibleColumns]);
+
+    const emitHelpAction = useCallback((action: string, durationMs?: number) => {
+        window.dispatchEvent(new CustomEvent('aga:help-action', { detail: { action, durationMs } }));
+    }, []);
+
+    const emitHelpError = useCallback((error: string) => {
+        window.dispatchEvent(new CustomEvent('aga:help-error', { detail: { error } }));
+    }, []);
 
     const toggleVisibleColumn = (id: string) => {
         setVisibleColumns(prev => prev.includes(id) ? prev.filter(c => c !== id) : [...prev, id]);
@@ -294,9 +314,9 @@ const Dashboard: React.FC<DashboardProps> = ({
         // Optimized check: unique by document mostly
         savedClients.forEach(c => {
             const name = c.nombre || `${c.firstName || ''} ${c.surnames || ''}`.trim();
-            const doc = c.documento || c.nif || '';
+            const doc = String(c.documento || c.nif || '');
 
-            if (name.toLowerCase().includes(q)) {
+            if (String(name).toLowerCase().includes(q)) {
                 matches.set(`name-${doc}`, { label: name, document: doc, type: 'name', clientId: c.id ?? undefined });
             }
             if (doc.toLowerCase().includes(q)) {
@@ -306,9 +326,9 @@ const Dashboard: React.FC<DashboardProps> = ({
 
         caseHistory.forEach(c => {
             const name = c.clientSnapshot?.nombre || `${c.client.firstName || ''} ${c.client.surnames || ''}`.trim();
-            const doc = c.clientSnapshot?.documento || c.client.nif || '';
+            const doc = String(c.clientSnapshot?.documento || c.client.nif || '');
 
-            if (name.toLowerCase().includes(q)) {
+            if (String(name).toLowerCase().includes(q)) {
                 matches.set(`name-${doc}`, { label: name, document: doc, type: 'name', clientId: c.clienteId ?? undefined });
             }
             if (doc.toLowerCase().includes(q)) {
@@ -338,7 +358,7 @@ const Dashboard: React.FC<DashboardProps> = ({
         if (!q) return '';
 
         const exactMatches = suggestions.filter(s =>
-            s.document.toLowerCase() === q || s.label.toLowerCase() === q
+            String(s.document || '').toLowerCase() === q || String(s.label || '').toLowerCase() === q
         );
 
         if (exactMatches.length === 1) return exactMatches[0].label;
@@ -419,6 +439,33 @@ const Dashboard: React.FC<DashboardProps> = ({
             displayName: entry.displayName || getDisplayNameForIdentifier(entry.identifier)
         })));
     }, [currentUser?.id, getDisplayNameForIdentifier]);
+
+    useEffect(() => {
+        if (searchQuery.trim() || selectedClientId) return;
+        const active = readEffectiveClientIdentifier();
+        if (active) setSearchQuery(active);
+    }, [searchQuery, selectedClientId]);
+
+    useEffect(() => {
+        const refreshIdentifierContext = () => {
+            const pinned = readIsIdentifierPinned();
+            const pinnedValue = readPinnedIdentifier();
+            const effective = readEffectiveClientIdentifier();
+            setIsIdentifierPinned(pinned);
+            setPinnedIdentifier(pinnedValue);
+            if (pinned && pinnedValue) {
+                setSearchQuery(pinnedValue);
+                setShowSuggestions(false);
+                setIsRecentsOpen(false);
+            } else if (!searchQuery && effective) {
+                setSearchQuery(effective);
+            }
+        };
+
+        refreshIdentifierContext();
+        window.addEventListener(getIdentifierContextChangedEventName(), refreshIdentifierContext as EventListener);
+        return () => window.removeEventListener(getIdentifierContextChangedEventName(), refreshIdentifierContext as EventListener);
+    }, [searchQuery]);
 
 
     // Filter Logic
@@ -764,6 +811,7 @@ const Dashboard: React.FC<DashboardProps> = ({
         setIsRecentsOpen(false);
         setSelectedClientId(null);
         setSelectedClientLabel('');
+        clearIdentifierContext();
     };
 
     const handleSelectSuggestion = (suggestion: SearchSuggestion) => {
@@ -778,6 +826,11 @@ const Dashboard: React.FC<DashboardProps> = ({
             ...entry,
             displayName: entry.displayName || getDisplayNameForIdentifier(entry.identifier)
         })));
+        if (isIdentifierPinned) {
+            setPinnedClientIdentifier(currentUser?.id, suggestion.document, suggestion.label);
+        } else {
+            setActiveClientIdentifier(currentUser?.id, suggestion.document, suggestion.label);
+        }
         setTimeout(() => searchInputRef.current?.focus(), 50);
     };
 
@@ -802,6 +855,11 @@ const Dashboard: React.FC<DashboardProps> = ({
             ...entry,
             displayName: entry.displayName || getDisplayNameForIdentifier(entry.identifier)
         })));
+        if (isIdentifierPinned) {
+            setPinnedClientIdentifier(currentUser?.id, canonicalIdentifier, name);
+        } else {
+            setActiveClientIdentifier(currentUser?.id, canonicalIdentifier, name);
+        }
         skipOpenSuggestionsOnNextFocusRef.current = true;
         setTimeout(() => searchInputRef.current?.focus(), 50);
     };
@@ -1120,6 +1178,18 @@ const Dashboard: React.FC<DashboardProps> = ({
     const endIndex = isAll ? totalItems : startIndex + (pageSize as number);
     const paginatedCases = processedCases.slice(startIndex, endIndex);
 
+    useEffect(() => {
+        if (hasExpedienteCriteria && !isDeferredCasesLoading && processedCases.length === 0) {
+            emitHelpError('EMPTY_RESULT');
+        }
+    }, [hasExpedienteCriteria, isDeferredCasesLoading, processedCases.length, emitHelpError]);
+
+    useEffect(() => {
+        if (selectedCases.length > 1) {
+            emitHelpAction('MULTI_SELECT');
+        }
+    }, [selectedCases.length, emitHelpAction]);
+
     const totalPagesValue = isAll ? 1 : Math.max(1, totalPages);
 
     // If current page is greater than total pages after filtering, reset to 1
@@ -1279,6 +1349,7 @@ const Dashboard: React.FC<DashboardProps> = ({
                                     visibleIds={visibleColumns}
                                     onToggle={toggleVisibleColumn}
                                 />
+                                <ColumnResizeToggle />
 
                                 {/* Active filter chips */}
                                 {activeExpedienteFilterCount > 0 && (
@@ -1328,11 +1399,16 @@ const Dashboard: React.FC<DashboardProps> = ({
                                                     type="text"
                                                     value={searchQuery}
                                                     onChange={(e) => {
-                                                        setSearchQuery(e.target.value);
+                                                        if (isIdentifierPinned) return;
+                                                        const nextValue = e.target.value;
+                                                        setSearchQuery(nextValue);
                                                         setSelectedClientId(null);
                                                         setSelectedClientLabel('');
                                                         setShowSuggestions(true);
                                                         setIsRecentsOpen(false);
+                                                        if (!nextValue.trim()) {
+                                                            clearIdentifierContext();
+                                                        }
                                                     }}
                                                     onFocus={() => {
                                                         if (skipOpenSuggestionsOnNextFocusRef.current) {
@@ -1343,18 +1419,44 @@ const Dashboard: React.FC<DashboardProps> = ({
                                                     }}
                                                     onBlur={handleSearchCollapse}
                                                     placeholder="Identificador (DNI/CIF)"
-                                                    className="w-full pl-10 pr-36 py-2 border border-slate-200 rounded-lg text-sm font-normal text-slate-700 bg-slate-50 shadow-sm focus:bg-white focus:ring-2 focus:ring-sky-500/10 focus:border-sky-500 outline-none transition-all placeholder:text-slate-400"
+                                                    readOnly={isIdentifierPinned}
+                                                    className={cn(
+                                                        "w-full pl-10 py-2 border rounded-lg text-sm font-normal text-slate-700 shadow-sm outline-none transition-all placeholder:text-slate-400",
+                                                        isIdentifierPinned
+                                                            ? "pr-[220px] bg-sky-50 border-sky-200"
+                                                            : "pr-[220px] bg-slate-50 border-slate-200 focus:bg-white focus:ring-2 focus:ring-sky-500/10 focus:border-sky-500"
+                                                    )}
                                                 />
-                                                {searchQuery && (
+                                                <div className="absolute right-2 top-1/2 -translate-y-1/2 z-10 flex items-center gap-2">
+                                                    {searchQuery && (
+                                                        <InputClearButton
+                                                            onClick={handleSearchClear}
+                                                            title="Limpiar búsqueda"
+                                                        />
+                                                    )}
                                                     <button
-                                                        onClick={handleSearchClear}
-                                                        className="absolute right-24 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors"
-                                                        title="Limpiar búsqueda"
+                                                        type="button"
+                                                        onMouseDown={(e) => {
+                                                            e.preventDefault();
+                                                            if (isIdentifierPinned) {
+                                                                unpinClientIdentifier();
+                                                                return;
+                                                            }
+                                                            const candidate = normalizeRecentClientIdentifier(searchQuery || pinnedIdentifier || '');
+                                                            if (!candidate) return;
+                                                            setPinnedClientIdentifier(currentUser?.id, candidate, selectedClientLabel);
+                                                        }}
+                                                        className={cn(
+                                                            "inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors",
+                                                            isIdentifierPinned
+                                                                ? "border-sky-300 bg-sky-100 text-sky-700"
+                                                                : "border-slate-200 bg-white text-slate-400 hover:text-sky-600 hover:border-sky-200"
+                                                        )}
+                                                        title={isIdentifierPinned ? "Identificador fijado (clic para desfijar)" : "Fijar identificador"}
                                                     >
-                                                        <X className="w-4 h-4" />
+                                                        <Pin className="w-3.5 h-3.5" />
                                                     </button>
-                                                )}
-                                                <div ref={recentsRef} className="absolute right-2 top-1/2 -translate-y-1/2">
+                                                    <div ref={recentsRef} className="relative">
                                                     <button
                                                         type="button"
                                                         onMouseDown={(e) => {
@@ -1401,6 +1503,7 @@ const Dashboard: React.FC<DashboardProps> = ({
                                                             )}
                                                         </div>
                                                     )}
+                                                    </div>
                                                 </div>
 
                                                 {/* Suggestions Panel */}

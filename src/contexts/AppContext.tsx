@@ -4,7 +4,7 @@ import React, { createContext, useState, useCallback, useEffect, ReactNode, useC
 import { CaseRecord, Client, User, EconomicTemplates, AppSettings, Vehicle, DEFAULT_THEME } from '@/types';
 import * as db from '@/services/firestoreService';
 import { getUsers, saveUser as apiSaveUser } from '@/services/userService';
-import { initializeAuth } from '@/services/firebase';
+import { initializeAuth, signInWithGoogleInteractive } from '@/services/firebase';
 import { useToast } from '@/hooks/useToast';
 
 
@@ -18,8 +18,11 @@ interface AppContextType {
   economicTemplates: EconomicTemplates;
   isLoading: boolean;
   initializationError: string | null;
+  requiresManualGoogleLogin: boolean;
 
   setCurrentUser: (user: User) => void;
+  retryInitialization: () => Promise<void>;
+  loginWithGooglePopup: () => Promise<void>;
   saveCase: (caseRecord: CaseRecord) => Promise<{ success: boolean; isNew?: boolean; }>;
   deleteCase: (fileNumber: string) => Promise<void>;
   saveClient: (client: Client) => Promise<void>;
@@ -46,10 +49,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [economicTemplates, setEconomicTemplates] = useState<EconomicTemplates>({});
   const [isLoading, setIsLoading] = useState(true);
   const [initializationError, setInitializationError] = useState<string | null>(null);
+  const [requiresManualGoogleLogin, setRequiresManualGoogleLogin] = useState(false);
 
-  useEffect(() => {
-    const loadInitialData = async () => {
+  const loadInitialData = useCallback(async () => {
       setIsLoading(true);
+      setInitializationError(null);
+      setRequiresManualGoogleLogin(false);
       try {
         // 1. Cargar Usuarios (Mock local, siempre funciona)
         const userList = await getUsers();
@@ -59,22 +64,59 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         // 2. Intentar conexión Firebase
         await initializeAuth();
 
-        const [clients, vehicles, settings, templates] = await Promise.all([
-          db.getSavedClients(),
-          db.getSavedVehicles(),
+        const [settings, templates] = await Promise.all([
           db.getSettings(),
           db.getEconomicTemplates(),
         ]);
 
         // Carga diferida de expedientes: el explorador consulta bajo demanda.
         setCaseHistory([]);
-        setSavedClients(clients);
-        setSavedVehicles(vehicles);
+        setSavedClients([]);
+        setSavedVehicles([]);
         setAppSettings(settings);
         setEconomicTemplates(templates);
 
+        // Carga pesada no bloqueante (clientes/vehículos) en segundo plano.
+        window.setTimeout(() => {
+          void (async () => {
+            try {
+              const [clients, vehicles] = await Promise.all([
+                db.getSavedClients(),
+                db.getSavedVehicles(),
+              ]);
+              setSavedClients(clients);
+              setSavedVehicles(vehicles);
+            } catch (backgroundError) {
+              console.warn('Background load (clients/vehicles) failed:', backgroundError);
+            }
+          })();
+        }, 0);
+
       } catch (error: any) {
         console.error("Error loading initial data:", error);
+
+        if (error.code === 'auth/redirecting') {
+          setInitializationError("Redirigiendo a Google para iniciar sesión...");
+          return;
+        }
+
+        if (error.code === 'auth/login-required') {
+          setInitializationError("Debes iniciar sesión con tu cuenta corporativa.");
+          setRequiresManualGoogleLogin(true);
+          return;
+        }
+
+        if (error.code === 'auth/invalid-domain') {
+          setInitializationError("Acceso denegado: usa tu cuenta corporativa @gestoria-arcos.com.");
+          return;
+        }
+
+        if (error.code === 'auth/redirect-failed') {
+          setInitializationError("No se pudo completar el login automático en este navegador.");
+          setRequiresManualGoogleLogin(true);
+          return;
+        }
+
         // Si falla Firebase, inicializamos con valores vacíos para que la APP funcione
         setCaseHistory([]);
         setSavedClients([]);
@@ -102,18 +144,40 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         if (error.code === 'permission-denied') {
           setInitializationError("Error de permisos: No tienes acceso a la base de datos. Se ha cargado el modo offline.");
         } else if (error.code?.includes('auth')) {
-          setInitializationError("Error de autenticación. Se ha cargado el modo offline.");
+          setInitializationError("Error de autenticación. Debes iniciar sesión con tu cuenta corporativa.");
         } else {
           setInitializationError("No se pudo conectar con la base de datos. Verifica tu conexión o configuración.");
         }
       } finally {
         setIsLoading(false);
       }
-    };
-    loadInitialData();
-
-    return () => undefined;
   }, []);
+
+  useEffect(() => {
+    void loadInitialData();
+    return () => undefined;
+  }, [loadInitialData]);
+
+  const retryInitialization = useCallback(async () => {
+    await loadInitialData();
+  }, [loadInitialData]);
+
+  const loginWithGooglePopup = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      await signInWithGoogleInteractive();
+      await loadInitialData();
+    } catch (error: any) {
+      if (error?.code === 'auth/invalid-domain') {
+        setInitializationError("Acceso denegado: usa tu cuenta corporativa @gestoria-arcos.com.");
+      } else {
+        setInitializationError("No se pudo abrir el login con Google. Revisa bloqueadores de popups y vuelve a intentar.");
+      }
+      setRequiresManualGoogleLogin(true);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [loadInitialData]);
 
   // Efecto para aplicar tema visual
   useEffect(() => {
@@ -246,7 +310,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       economicTemplates,
       isLoading,
       initializationError,
+      requiresManualGoogleLogin,
       setCurrentUser,
+      retryInitialization,
+      loginWithGooglePopup,
       saveCase,
       deleteCase,
       saveClient,
